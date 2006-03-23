@@ -1,0 +1,81 @@
+
+2006-03-10  Claude Lepage      <claude@bic.mni.mcgill.ca>
+	* fixed Makefile.am to add scripts to distribution;
+	* fixed xINCDIRx and xPERLx inside scripts 
+	* fixed configure.ac to create scripts (replace .plib
+          by .pl.in to produce .pl)
+
+2006-03-01  Claude Lepage      <claude@bic.mni.mcgill.ca>
+        * surface_qc.pl: new file, for surface quality checks
+        * cortical_thickness.pl: new file, for easy calculation
+          of cortical thickness using tlink, tnear, tnormal,
+          tlaplace
+        * most scripts: allow 328K surfaces, add mincdefrag,
+          more iterations and use linear weights for gray
+          expansion, remove a white matter masking step that
+          was chopping the left occipital lobe, etc.
+        * evaluate_fit_3d.c (functions evaluate_laplacian_fit
+          and evaluate_laplacian_fit_deriv): add oversampling,
+          remove check on tissue type in derivative, clean-up
+          calculation of derivative, print residual to measure
+          convergence.
+
+2005-11-01  Andrew Janke  <a.janke@gmail.com>
+
+	* renamed to surface-extraction for release
+	* renamed new_fit_3D to surface_fit
+	
+2004-10-17  Jason Lerch	      <jason@bic.mni.mcgill.ca>
+
+	* calibrate_white.pl: fixed divide by zero bug on linux
+	
+2004-10-16  Jason Lerch	      <jason@bic.mni.mcgill.ca>
+
+	* configure.ac: changed name to CLASP and bumped up to version 2.0
+	* scripts/Makefile.am: added classify_correct to installable
+	scripts
+	* fixed header inclusions
+	* changed datadir references in scripts to CLASP from ASP
+
+2004-04-30  June Sic Kim      <luck3d@bic.mni.mcgill.ca>
+
+	* delete some redundant code in 'evaluate_laplacian_fit' & 
+        'evaluate_volume_fit'
+        * fixed include statement in fit_3d.h
+	* scripts/expand_from_white: add gradient file of laplacian map.
+
+2003-09-10  Jason Lerch	      <jason@bic.mni.mcgill.ca>
+
+	* added src/skeletonization.{c,h} to the repository
+
+2003-09-08  Jason Lerch       <jason@bic.mni.mcgill.ca>
+
+	* added scripts/make_asp_grid.pl
+	* fixed include statement in fit_3d.h
+
+2002-08-09  Steve M. Robbins  <steve@nyongwa.montreal.qc.ca>
+
+	* scripts/Makefile.am:
+	* scripts/asp.pl: Set MNI_DATAPATH, if not already in 
+	environment.
+
+	* scripts/mask_cortical_white_matter.pl: Substitute
+	perl path.
+
+2002-08-01  Jason Lerch		<jason@bic.mni.mcgill.ca>
+
+	* correct header inclusion
+
+2002-04-08  Jason Lerch		<jason@bic.mni.mcgill.ca>
+
+	* NEWS added.
+	* removed specific bicpl header checks from configure.ac
+	* added bicpl/ or volume_io/ into #include statements where
+	necessary.
+	
+2002-01-20  Jason Lerch		<jason@bic.mni.mcgill.ca>
+
+	* tagged the repository with the rag "rel_1" - this is the
+	software as David MacDonald had left it (with only very minor
+	bug-fixes).
+	
