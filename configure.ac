@@ -13,6 +13,8 @@ AM_INIT_AUTOMAKE
 # It is recommended to leave it as "config.h".
 AC_CONFIG_HEADERS([config.h])
 
+CFLAGS="$CFLAGS -DFDT=\"float\""
+
 # This macro eases building the package; see m4/README.
 smr_WITH_BUILD_PATH
 
