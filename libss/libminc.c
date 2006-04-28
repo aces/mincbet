@@ -1,5 +1,5 @@
 /*
- * Andrew Janke - rotor@cmr.uq.edu.au
+ * Andrew Janke - a.janke@gmail.com
  * Copy and munge as you choose, heck even cut this 
  * line out if you feel that way inclined
  *
