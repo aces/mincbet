@@ -69,8 +69,8 @@ void usage(void)
 /* }}} */
 /* {{{ main */
 
-#define TESSELATE_ORDER             5       /* 5 */
-#define ITERATIONS                  1000    /* 1000 */
+#define TESSELATE_ORDER             6       /* 5 */
+#define ITERATIONS                  1500    /* 1000 */
 #define BRAIN_THRESHOLD_DEFAULT     0.5     /* 0.5 */
 #define COST_SEARCH                 7       /* 20 mm */
 #define NORMAL_MAX_UPDATE_FRACTION  0.5     /* 0.5 */

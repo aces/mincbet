@@ -1,4 +1,7 @@
 
+2006-05-26  Claude Lepage      <claude@bic.mni.mcgill.ca>
+	* increased tesselation order to 6 for more accuracy
+
 2006-03-10  Claude Lepage      <claude@bic.mni.mcgill.ca>
 	* fixed Makefile.am to add scripts to distribution;
 	* fixed xINCDIRx and xPERLx inside scripts 
