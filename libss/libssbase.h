@@ -38,8 +38,16 @@
 #include <string.h>
 #include <math.h>
 #include <ctype.h>
-#include <values.h>
+#include <limits.h>
 #include <sys/types.h>
+
+#ifndef MAXSHORT
+#define MAXSHORT SHRT_MAX
+#endif
+
+#ifndef MAXINT
+#define MAXINT INT_MAX
+#endif
 
 #ifndef FDT
 #define FDT unsigned char

@@ -1,3 +1,18 @@
+New in Release 1.2.1
+--------------------
+        * copy all attributes of minc header from source image
+          to output mask (to include direction cosines too!)
+        * save the mask with the axes in the same order as in
+          the source image
+        * save mask in byte format
+
+New in Release 1.2.0
+--------------------
+        * properly account for voxel sizes when not 1.0mm.
+        * use local edge length in local radius of curvature
+          instead of a global average edge length
+	* output surface mask in obj format
+
 New in Release 1.1
 ------------------
 	* increased tesselation order

@@ -1,5 +1,5 @@
 /*
- * Andrew Janke - a.janke@gmail.com
+ * Andrew Janke - rotor@cmr.uq.edu.au
  * Copy and munge as you choose, heck even cut this 
  * line out if you feel that way inclined
  *
@@ -7,6 +7,7 @@
 
 #include "libss.h"
 #include "libavw.h"
+#include "libminc.h"
 #include <volume_io.h>
 
 void minc_read(char *filename, image_struct * image)
@@ -14,9 +15,10 @@ void minc_read(char *filename, image_struct * image)
    int      i, size, x, y, z;
    static int DataTypeSizes[32] = { 0, 1, 8, 0, 16, 0, 0, 0, 32, 0, 0, 0, 0, 0, 0, 0, 32 };
 
+   enum     {XX, YY, ZZ};
+
    /* minc vars */
    Volume   volume;
-   char    *axis_order[3] = { MIzspace, MIyspace, MIxspace };
    Real     real_min, real_max;
    Real     voxel_min, voxel_max;
    Real     steps[MAX_VAR_DIMS];
@@ -24,8 +26,18 @@ void minc_read(char *filename, image_struct * image)
    int      sizes[MAX_VAR_DIMS];
 
    /* read in the volume */
-   input_volume(filename, MAX_VAR_DIMS, axis_order,
+   input_volume(filename, MAX_VAR_DIMS, NULL, 
                 NC_UNSPECIFIED, TRUE, 0.0, 0.0, TRUE, &volume, NULL);
+
+   /* obtain order of axes */
+   char ** dimnames = create_output_dim_names( volume, filename, 
+                                               NULL, sizes );
+   delete_volume( volume );
+
+   /* re-open volume with original order of axes,
+      not the default (z,y,x) one. */
+   input_volume( filename, MAX_VAR_DIMS, dimnames,
+                 NC_UNSPECIFIED, TRUE, 0.0, 0.0, TRUE, &volume, NULL);
 
    get_volume_real_range(volume, &real_min, &real_max);
    get_volume_voxel_range(volume, &voxel_min, &voxel_max);
@@ -33,18 +45,18 @@ void minc_read(char *filename, image_struct * image)
    get_volume_starts(volume, starts);
    get_volume_separations(volume, steps);
 
-   image->x = MAX(1, sizes[2]);
-   image->y = MAX(1, sizes[1]);
-   image->z = MAX(1, sizes[0]);
+   image->x = MAX(1, sizes[XX]);
+   image->y = MAX(1, sizes[YY]);
+   image->z = MAX(1, sizes[ZZ]);
    image->t = 1;
 
    size = image->x * image->y * image->z * image->t;
 
    /* voxel size */
 
-   image->xv0 = steps[2];
-   image->yv0 = steps[1];
-   image->zv0 = steps[0];
+   image->xv0 = steps[XX];
+   image->yv0 = steps[YY];
+   image->zv0 = steps[ZZ];
 
    image->xv = fabs(image->xv0);
    image->yv = fabs(image->yv0);
@@ -64,14 +76,12 @@ void minc_read(char *filename, image_struct * image)
       }
 
    /* origin */
-   image->xo = starts[2];
-   image->yo = starts[1];
-   image->zo = starts[0];
+   image->xo = starts[XX];
+   image->yo = starts[YY];
+   image->zo = starts[ZZ];
 
    /* info, orient, min+max, lut */
    image->info = 0;
-
-   /* this is set by the axis_order so it will be this (always.) */
    image->orient = 0;
 
    image->min = real_min;
@@ -91,11 +101,10 @@ void minc_read(char *filename, image_struct * image)
 
    /* read data */
    i = 0;
-   for(z = 0; z < sizes[0]; z++){
-      for(y = 0; y < sizes[1]; y++){
-         for(x = 0; x < sizes[2]; x++){
-
-            image->i[i] = (FDT)get_volume_real_value(volume, z, y, x, 0, 0);
+   for(z = 0; z < image->z; z++){
+      for(y = 0; y < image->y; y++){
+         for(x = 0; x < image->x; x++){
+            image->i[i] = (FDT)get_volume_real_value(volume, x, y, z, 0, 0);
             i++;
             }
          }
@@ -134,6 +143,9 @@ void minc_read(char *filename, image_struct * image)
    image->lthresh = image->dtmin;      /* relevant procs know not to use these unless changed from these defaults */
    image->uthresh = image->dtmax;
 
+   /* Delete volume after usage */
+   delete_volume( volume );
+
    }
 
 /* minc_write */
@@ -142,71 +154,85 @@ void minc_read(char *filename, image_struct * image)
 /* this is a bit snarfling as we loose most of the good volume info darn internal format */
 /* that doesn't hold goodies like direction cosines, history, etc etc etc                */
 /* besides it's good enough for what it was written for. BET                             */
-void minc_write(char *filename, image_struct image)
-{
+
+void minc_write(char *input_filename, int dt, char *output_filename, image_struct image) {
+
    char filename2[1000];
+   Volume input_vol;
    Volume volume;
    int x,y,z,i;
-   char    *axis_order[3] = { MIzspace, MIyspace, MIxspace };
+   int      sizes[MAX_VAR_DIMS];
    
    nc_type datatype;
    BOOLEAN data_signed;
-   Real     steps[MAX_VAR_DIMS];
-   Real     starts[MAX_VAR_DIMS];
-   int      sizes[MAX_VAR_DIMS];
+   Real    dtmin, dtmax;
    
-   sprintf(filename2, "%s.mnc", filename);
+   /* read in the volume */
+   input_volume(input_filename, MAX_VAR_DIMS, NULL,
+                NC_UNSPECIFIED, TRUE, 0.0, 0.0, TRUE, &input_vol, NULL);
+
+   /* obtain order of axes */
+   char ** dimnames = create_output_dim_names( input_vol, input_filename, 
+                                               NULL, sizes );
+   delete_volume( input_vol );
+
+   /* re-open volume with original order of axes, not the
+      default (z,y,x) one. Now the output volume will be
+      written in the same order as the input volume. */
+   input_volume(input_filename, MAX_VAR_DIMS, dimnames,
+                NC_UNSPECIFIED, TRUE, 0.0, 0.0, TRUE, &input_vol, NULL);
+
+   sprintf(filename2, "%s.mnc", output_filename);
+
+   switch( dt ) {
+     // case default:
+     case MINCBET_SAME:
+       datatype = NC_UNSPECIFIED;
+       data_signed = FALSE;
+       dtmin = 0;
+       dtmax = 0;
+       break;
+     case MINCBET_BYTE:
+       datatype = NC_BYTE;
+       data_signed = FALSE;
+       dtmin = 0;
+       dtmax = 255;
+       break;
+     case MINCBET_SHORT:
+       datatype = NC_SHORT;
+       data_signed = TRUE;
+       dtmin = -MAXSHORT - 1;
+       dtmax = MAXSHORT;
+       break;
+     case MINCBET_FLOAT:
+       datatype = NC_FLOAT;
+       data_signed = TRUE;
+       dtmin = -1e10;
+       dtmax = 1e10;
+       break;
+   }
+
+   // Copy the header definition from the original volume.
+
+   volume = copy_volume_definition( input_vol, datatype, data_signed, 
+                                    dtmin, dtmax );
+   delete_volume( input_vol );
    
-   /* figger out the datatype */
-   switch(image.dt){
-      default: 
-      case DT_UNSIGNED_CHAR:
-         datatype = NC_BYTE;
-         data_signed = FALSE;
-         break;
-      case DT_SIGNED_SHORT:
-         datatype = NC_SHORT;
-         data_signed = TRUE;
-         break;
-      case DT_FLOAT:
-         datatype = NC_FLOAT;
-         data_signed = TRUE;
-         break;
-      }
-   
-   volume = create_volume(3, axis_order, datatype, data_signed, image.dtmin, image.dtmax);
    set_volume_real_range(volume, image.min, image.max);
-   
-   sizes[2] = image.x;
-   sizes[1] = image.y;
-   sizes[0] = image.z;
- 
-   steps[2] = image.xv0;
-   steps[1] = image.yv0;
-   steps[0] = image.zv0;
-   
-   starts[2] = image.xo;
-   starts[1] = image.yo;
-   starts[0] = image.zo;
-   
-   set_volume_sizes(volume, sizes);
-   set_volume_starts(volume, starts);
-   set_volume_separations(volume, steps);
-   alloc_volume_data(volume);
-   
+
    /* write data */
    i = 0;
-   for(z = 0; z < sizes[0]; z++){
-      for(y = 0; y < sizes[1]; y++){
-         for(x = 0; x < sizes[2]; x++){
-
-            set_volume_real_value(volume, z, y, x, 0, 0, (Real)image.i[i]);
-            i++;
-            }
-         }
-      }
-   
-   output_volume(filename2, NC_UNSPECIFIED, TRUE, 0, 0, volume, NULL, (minc_output_options*)NULL);
-   
+   for(z = 0; z < image.z; z++){
+     for(y = 0; y < image.y; y++){
+       for(x = 0; x < image.x; x++){
+         set_volume_real_value(volume, x, y, z, 0, 0, (Real)image.i[i]);
+         i++;
+       }
+     }
    }
+   
+   output_volume(filename2, NC_UNSPECIFIED, TRUE, 0, 0, volume, 
+                 NULL, (minc_output_options*)NULL);
+   
+}
 

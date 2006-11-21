@@ -1,3 +1,15 @@
+2006-10-20  Claude Lepage      <claude@bic.mni.mcgill.ca>
+	* copy all attributes of minc header from source image
+          to output mask (to include direction cosines too!)
+	* save the mask with the axes in the same order as in
+          the source image
+	* save mask in byte format
+
+2006-08-15  Claude Lepage      <claude@bic.mni.mcgill.ca>
+	* properly account for voxel sizes when not 1.0mm.
+        * use local edge length in local radius of curvature 
+          instead of a global average edge length
+	* output surface mask in obj format
 
 2006-05-26  Claude Lepage      <claude@bic.mni.mcgill.ca>
 	* increased tesselation order to 6 for more accuracy

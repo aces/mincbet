@@ -55,6 +55,7 @@ void usage(void)
   printf("-m : generate binary brain mask\n");
   printf("-s : generate approximate skull image\n");
   printf("-n : don't generate segmented brain image output\n");
+  printf("-b : generate surface mask in BIC brain-view format\n");
   printf("-f <fractional threshold> : fractional intensity threshold (0->1); default=0.5; smaller values give larger brain outline estimates\n");
   printf("-g <fractional threshold> : vertical gradient in fractional intensity threshold (-1->1); default=0; positive values give larger brain outline at bottom, smaller at top\n");
   printf("-t : apply thresholding to segmented brain image and mask\n\n");
@@ -66,19 +67,33 @@ void usage(void)
   exit(1);
 }
 
-/* }}} */
 /* {{{ main */
 
 #define TESSELATE_ORDER             6       /* 5 */
-#define ITERATIONS                  1500    /* 1000 */
+#define ITERATIONS                  2000    /* 1000 */
 #define BRAIN_THRESHOLD_DEFAULT     0.5     /* 0.5 */
-#define COST_SEARCH                 7       /* 20 mm */
-#define NORMAL_MAX_UPDATE_FRACTION  0.5     /* 0.5 */
+#define COST_SEARCH                 7.0     /* 20 mm */
+
+// Weight for surface smoothness - tangential component. Higher value
+// will favor equal edge lengths.
 #define LAMBDA_TANGENT              0.5     /* 0.5 */
-#define LAMBDA_FIT                  0.1     /* 0.1 */
+
+// Weight for image (volume) fit. May also be viewed as an integration
+// step: a large value takes larger steps, requires fewer iterations.
+// However, it's better to have small steps, more iterations.
+// Note: LAMBDA_FIT multiplies NORMAL_MAX_UPDATE_FRACTION
+#define LAMBDA_FIT                  0.10    /* 0.1 */
+#define NORMAL_MAX_UPDATE_FRACTION  0.5     /* 0.5 */
+
+// For surface smoothness, put more weight on smoothing (normal component) when
+// radius of curvature is less than RADIUSMIN, less weight when radius of curvature
+// is more than RADIUSMAX.
 #define RADIUSMAX                   10.0    /* 10.0 mm */
 #define RADIUSMIN                   3.33    /* 3.33 mm */
+
 #define SELF_INTERSECTION_THRESHOLD 4000    /* 4000 */
+
+// Used only with -s and -S options
 #define SKULL_SEARCH                30      /* 30 mm */
 #define SKULL_START                 -3      /* -3 mm */
 
@@ -95,7 +110,7 @@ int main(argc, argv)
 FDT *in, *mask=NULL, *raw=NULL, threshold, thresh2, thresh98,
   hist_min=0, hist_max=0, medianval;
 int x_size, y_size, z_size, x, y, z, i, pc=0, iters, pass=1,
-  output_brain=1, output_xtopol=0, output_cost=0, output_mask=0,
+  output_brain=1, output_bic=0, output_xtopol=0, output_cost=0, output_mask=0,
   output_overlay=0, output_skull=0, apply_thresholding=0, code_skull=0;
 double cgx, cgy, cgz, radius, scale, ml=0, ml0=0, tmpf,
   brain_threshold=BRAIN_THRESHOLD_DEFAULT, gradthresh=0, incfactor=0,
@@ -104,9 +119,8 @@ char filename[1000];
 image_struct im;
 points_struc *v;
 
-/* }}} */
 
-  /* {{{ process arguments */
+  /* process arguments */
 
 if (argc<3)
      usage();
@@ -133,14 +147,14 @@ for (i = 3; i < argc; i++) {
       output_skull=1;
       code_skull=1;
     }
-
-/* }}} */
   else if (!strcmp(argv[i], "-m"))
     output_mask=1;
   else if (!strcmp(argv[i], "-o"))
     output_overlay=1;
   else if (!strcmp(argv[i], "-n"))
     output_brain=0;
+  else if (!strcmp(argv[i], "-b"))
+    output_bic=1;
   else if (!strcmp(argv[i], "-t"))
     apply_thresholding=1;
   else if (!strcmp(argv[i], "-f"))
@@ -161,7 +175,6 @@ for (i = 3; i < argc; i++) {
       }
     }
 
-/* }}} */
   else if (!strcmp(argv[i], "-g"))
     /* {{{ gradient fractional brain threshold */
 
@@ -180,21 +193,19 @@ for (i = 3; i < argc; i++) {
       }
     }
 
-/* }}} */
   else
     usage();
 }
 
 brain_threshold=pow(brain_threshold,0.275);
 
-if ( !output_xtopol && !output_cost && !output_skull && !output_mask && !output_overlay && !output_brain )
-{
+if ( !output_xtopol && !output_cost && !output_skull && !output_mask && !output_overlay &&
+     !output_brain && !output_bic ) {
   printf("No outputs requested!\n");
   usage();
 }
 
-/* }}} */
-  /* {{{ image preprocessing */
+  /* image preprocessing */
 
 im.min=im.max=0;
 find_thresholds(&im,0.1);
@@ -210,24 +221,20 @@ printf("CofG (%f,%f,%f) mm\n",cgx,cgy,cgz);
 radius = find_radius (im,im.xv*im.yv*im.zv);
 printf("RADIUS %f\n",radius);
 
-{
   FDT *tmpimage = (FDT *) malloc(sizeof(FDT)*x_size*y_size*z_size);
 
   i=0;
   for(z=0; z<z_size; z++)
     for(y=0; y<y_size; y++)
-      for(x=0; x<x_size; x++)
-	{
+      for(x=0; x<x_size; x++) {
 	  FDT tmp=IA(in,x,y,z);
-	  
 	  if ( (tmp>thresh2) && (tmp<thresh98) &&
 	       ( (x*im.xv-cgx)*(x*im.xv-cgx) + (y*im.yv-cgy)*(y*im.yv-cgy) + (z*im.zv-cgz)*(z*im.zv-cgz) < radius*radius ) )
 	    tmpimage[i++]=tmp;
-	}
+      }
   medianval = median(0.5,tmpimage,i);
   printf("MEDIANVAL %f\n",(double)medianval);
   free(tmpimage);
-}
 
 if (output_cost) /* prepare cost function image for writing into */
 {
@@ -235,488 +242,327 @@ if (output_cost) /* prepare cost function image for writing into */
   memset(raw,(unsigned char)0,sizeof(FDT)*x_size*y_size*z_size);
 }
 
-/* }}} */
+object *old = &ico;                /* start with icosohedral tessellation */
+tessa((int)TESSELATE_ORDER,&old);  /* create tessellated triangles; level 5 gives 2562 points */
+pc=points_list(old,&v);            /* convert triangles to vertex list */
+free(old);                         /* don't need triangular tessellation any more */
 
-  while (pass>0)
-    {
-      /* {{{ initialize tessellation */
+/*printf("VERTICES %d\n",pc);*/
 
-if (pass==1)
-{
-  object *old = &ico;                /* start with icosohedral tessellation */
-  
-  tessa((int)TESSELATE_ORDER,&old);  /* create tessellated triangles; level 5 gives 2562 points */
-  pc=points_list(old,&v);            /* convert triangles to vertex list */
-  free(old);                         /* don't need triangular tessellation any more */
-
-  /*printf("VERTICES %d\n",pc);*/
-
-  /* measure initial spacing for use later in self-intersection calculations */
-  ml0 = sqrt( (v[0].xorig-v[v[0].n[0]].xorig)*(v[0].xorig-v[v[0].n[0]].xorig) +
-	      (v[0].yorig-v[v[0].n[0]].yorig)*(v[0].yorig-v[v[0].n[0]].yorig) +
-	      (v[0].zorig-v[v[0].n[0]].zorig)*(v[0].zorig-v[v[0].n[0]].zorig) );
-  /*printf("ml0=%f\n",ml0);*/
+/* measure initial spacing for use later in self-intersection calculations */
+ml0 = sqrt( (v[0].xorig-v[v[0].n[0]].xorig)*(v[0].xorig-v[v[0].n[0]].xorig) +
+            (v[0].yorig-v[v[0].n[0]].yorig)*(v[0].yorig-v[v[0].n[0]].yorig) +
+            (v[0].zorig-v[v[0].n[0]].zorig)*(v[0].zorig-v[v[0].n[0]].zorig) );
+/*printf("ml0=%f\n",ml0);*/
 
 #ifdef DEBUG_NORMALS
-  v = (points_struc *)realloc((void *)v,sizeof(points_struc)*2*(pc+10)); /* make space for storing normals */
+v = (points_struc *)realloc((void *)v,sizeof(points_struc)*2*(pc+10)); /* make space for storing normals */
 #endif
 
-}
+while (pass>0) {
+  /* initialize tessellation */
 
-/* scale vertex positions for this image, set surface small and allow to grow */
-for(i=0; i<pc; i++)
-{
-  v[i].x = v[i].xorig * radius * 0.5 + cgx;
-  v[i].y = v[i].yorig * radius * 0.5 + cgy;
-  v[i].z = v[i].zorig * radius * 0.5 + cgz;
-}
+  /* scale vertex positions for this image, set surface small and allow to grow */
+  for(i=0; i<pc; i++) {
+    v[i].x = v[i].xorig * radius * 0.5 + cgx;
+    v[i].y = v[i].yorig * radius * 0.5 + cgy;
+    v[i].z = v[i].zorig * radius * 0.5 + cgz;
+  }
 
-/* }}} */
-      /* {{{ find brain surface */
+  /* find brain surface */
 
-for(iters=0; iters<ITERATIONS; iters++)
-{
-  /* {{{ find local surface normals */
+  for(iters=0; iters<ITERATIONS; iters++) {
+    /* find local surface normals */
 
-for(i=0; i<pc; i++)
-{
-  double nx, ny, nz, tmpf;
-  int k, l;
+    for(i=0; i<pc; i++) {
+      double nx, ny, nz, tmpf;
+      int k, l;
 
-  nx=ny=nz=0.0;
+      nx=ny=nz=0.0;
 
-  for(k=0; v[i].n[k]>-1; k++); /* find number of connections */
+      for(k=0; v[i].n[k]>-1; k++); /* find number of connections */
 
-  for(l=0; l<k; l++) /* for each pair of consecutive neighbours form a vector product to get normal */
-    {
-      double adx = v[v[i].n[l]].x - v[i].x,
-	ady = v[v[i].n[l]].y - v[i].y,
-	adz = v[v[i].n[l]].z - v[i].z,
-	bdx = v[v[i].n[(l+1)%k]].x - v[i].x,
-	bdy = v[v[i].n[(l+1)%k]].y - v[i].y,
-	bdz = v[v[i].n[(l+1)%k]].z - v[i].z;
-  
-      nx += ady*bdz - adz*bdy;
-      ny += adz*bdx - adx*bdz;
-      nz += adx*bdy - ady*bdx;
-    }
+      for(l=0; l<k; l++) { /* for each pair of consecutive neighbours form a vector product to get normal */
+        double adx = v[v[i].n[l]].x - v[i].x,
+               ady = v[v[i].n[l]].y - v[i].y,
+               adz = v[v[i].n[l]].z - v[i].z,
+               bdx = v[v[i].n[(l+1)%k]].x - v[i].x,
+               bdy = v[v[i].n[(l+1)%k]].y - v[i].y,
+               bdz = v[v[i].n[(l+1)%k]].z - v[i].z;
+        nx += ady*bdz - adz*bdy;
+        ny += adz*bdx - adx*bdz;
+        nz += adx*bdy - ady*bdx;
+      }
 
-  /* make the normal vector of length 1 */
-  tmpf = sqrt(nx*nx+ny*ny+nz*nz);
-  nx/=(double)tmpf; ny/=(double)tmpf; nz/=(double)tmpf;
+      /* make the normal vector of length 1 */
+      tmpf = sqrt(nx*nx+ny*ny+nz*nz);
+      nx/=(double)tmpf; ny/=(double)tmpf; nz/=(double)tmpf;
 
-  /* {{{ debug normals */
+      /* debug normals */
 
 #ifdef DEBUG_NORMALS
-
-if (iters==ITERATIONS-1) /* final iteration */
-{
-     v[pc+i].x=v[i].x+nx*20.0;
-     v[pc+i].y=v[i].y+ny*20.0;
-     v[pc+i].z=v[i].z+nz*20.0;
-     v[pc+i].n[0]=i;
-     v[pc+i].n[1]=-1;
-}
-
+      if (iters==ITERATIONS-1) { /* final iteration */
+        v[pc+i].x=v[i].x+nx*20.0;
+        v[pc+i].y=v[i].y+ny*20.0;
+        v[pc+i].z=v[i].z+nz*20.0;
+        v[pc+i].n[0]=i;
+        v[pc+i].n[1]=-1;
+      }
 #endif
 
-/* }}} */
-
-  v[i].nx=nx;
-  v[i].ny=ny;
-  v[i].nz=nz;
-}
-
-/* }}} */
-  /* {{{ find mean connection length every now and then */
-
-if ( (iters==50) || (iters%100==0) ) /* add the 50 as the rate of change is highest at start; thus do 0,50,100,200,..... */
-{
-  int l;
-
-  ml=0;
-
-  for(i=0; i<pc; i++)
-    {
-      double mml=0;
-      
-      for(l=0; v[i].n[l]>-1; l++)
-	mml += sqrt( (v[i].x-v[v[i].n[l]].x)*(v[i].x-v[v[i].n[l]].x) +
-		     (v[i].y-v[v[i].n[l]].y)*(v[i].y-v[v[i].n[l]].y) +
-		     (v[i].z-v[v[i].n[l]].z)*(v[i].z-v[v[i].n[l]].z) );
-
-      ml += mml/l;
+      v[i].nx=nx;
+      v[i].ny=ny;
+      v[i].nz=nz;
     }
 
-  ml /= pc;
-  /*printf("iteration=%d, ml=%f\n",iters,ml);*/
-}
+    /* find mean connection length every now and then */
+    /* add the 50 as the rate of change is highest at start; thus do 0,50,100,200,..... */
 
-/* }}} */
-  /* {{{ increased smoothing for pass>1 */
+    if ( (iters==50) || (iters%100==0) ) {
+      int l;
 
-if (pass>1)
-{
-  incfactor=pow((double)10.0,(double)pass);
+      ml=0;
 
-  if (iters>ITERATIONS*0.75)
-    incfactor=4.0*(1.0-((double)iters)/ITERATIONS)*(incfactor-1.0) + 1.0;
-}
-
-/* }}} */
-
-  for(i=0; i<pc; i++) /* calculate tessellation update */
-    {
-      /* {{{ variables, and setup k and normal */
-
-FDT lmin, lmax;
-int d, k, l;
-double nx=v[i].nx, ny=v[i].ny, nz=v[i].nz, sx, sy, sz, fit, sn, stx, sty, stz;
-
-for(k=0; v[i].n[k]>-1; k++); /* find number of connections */
-
-/* }}} */
-      /* {{{ average position of neighbours: smoothing vector */
-
-/* s is vector from current vertex to the mean position of its neighbours */
-
-sx=sy=sz=0;
-
-for(l=0; l<k; l++)
-{
-  sx += v[v[i].n[l]].x;
-  sy += v[v[i].n[l]].y;
-  sz += v[v[i].n[l]].z;
-}
-
-sx = sx/k - v[i].x;
-sy = sy/k - v[i].y;
-sz = sz/k - v[i].z;
-
-/* part of s normal to surface, sn = n * (s.n)
-   part of s tangent to surface, st = s - sn */
-
-sn = sx*nx + sy*ny + sz*nz; /* this is just the s.n part - will multiply by n later */
-
-stx = sx - nx * sn;
-sty = sy - ny * sn;
-stz = sz - nz * sn;
-
-/* }}} */
-      /* {{{ COMMENT ORIG find intensity-based part of cost function - local max */
-
-#ifdef FoldingComment
-
-{
-  FDT lnew;
-  int all_inside_image=1;
-  double lthresh, local_brain_threshold;
-
-  fit=0;
-  lmin=hist_max;
-  lmax=thresh98/2+thresh2/2;
-
-  tmpf = brain_threshold + gradthresh * ( (v[i].z-cgz) / radius );
-  local_brain_threshold = MIN( 1.0 , MAX( tmpf , 0.0 ) );  
-
-  d=1;   /* start d at 1 not 0 so that boundary is just outside brain not on the actual edge */
-  x=FTOI((v[i].x-((double)d)*nx)/im.xv); y=FTOI((v[i].y-((double)d)*ny)/im.yv); z=FTOI((v[i].z-((double)d)*nz)/im.zv);
-  if ( (x>=0) && (x<x_size) && (y>=0) && (y<y_size) && (z>=0) && (z<z_size) )
-    {
-      lnew=IA(in,x,y,z);
-      lmin = MIN(lmin,lnew);
-      lmax = MAX(lmax,lnew);
+      for(i=0; i<pc; i++) {
+        double mml=0;
+        for(l=0; v[i].n[l]>-1; l++) {
+          mml += sqrt( (v[i].x-v[v[i].n[l]].x)*(v[i].x-v[v[i].n[l]].x) +
+                       (v[i].y-v[v[i].n[l]].y)*(v[i].y-v[v[i].n[l]].y) +
+                       (v[i].z-v[v[i].n[l]].z)*(v[i].z-v[v[i].n[l]].z) );
+        }
+        ml += mml/l;
+      }
+      ml /= pc;
     }
-  else all_inside_image=0;
 
-  d=COST_SEARCH;
-  x=FTOI((v[i].x-((double)d)*nx)/im.xv); y=FTOI((v[i].y-((double)d)*ny)/im.yv); z=FTOI((v[i].z-((double)d)*nz)/im.zv);
-  if ( (x>=0) && (x<x_size) && (y>=0) && (y<y_size) && (z>=0) && (z<z_size) )
-    {
-      lnew=IA(in,x,y,z);
-      lmin = MIN(lmin,lnew);
-      /*lmax = MAX(lmax,lnew);*/
+    /* increased smoothing for pass>1 */
+
+    if (pass>1) {
+      incfactor=pow((double)10.0,(double)pass);
+
+      if (iters>ITERATIONS*0.75) {
+        incfactor=4.0*(1.0-((double)iters)/ITERATIONS)*(incfactor-1.0) + 1.0;
+      }
     }
-  else all_inside_image=0;
 
-  if (all_inside_image)
-    {
-      for(d=2;d<COST_SEARCH;d++)
-	{
-	  x=FTOI((v[i].x-((double)d)*nx)/im.xv); y=FTOI((v[i].y-((double)d)*ny)/im.yv); z=FTOI((v[i].z-((double)d)*nz)/im.zv);
-	  lnew=IA(in,x,y,z);
-	  lmin = MIN(lmin,lnew);
-	  if (d<COST_SEARCH/2) /* only look relatively locally for maximum intensity */
-	    lmax = MAX(lmax,lnew);
-	}
+    for(i=0; i<pc; i++) {       /* calculate tessellation update */
+      /* variables, and setup k and normal */
 
-      lmin = MAX(lmin,thresh2);   /* so that extreme values don't screw this up */
-      lmax = MIN(lmax,thresh98);
+      FDT lmin, lmax;
+      int k, l;
+      double d;
+      double nx=v[i].nx, ny=v[i].ny, nz=v[i].nz, sx, sy, sz, mml, fit, sn, stx, sty, stz;
 
-      lthresh = (lmax - thresh2)*local_brain_threshold + thresh2;
-      tmpf = lmin - lthresh;
-      fit = tmpf / ((lmax - thresh2)*0.5); /* scale range to around -1:1 */
-  
-      if (output_cost)
-	{
+      /* average position of neighbours: smoothing vector */
+      for(k=0; v[i].n[k]>-1; k++); /* find number of connections */
+
+      /* s is vector from current vertex to the mean position of its neighbours */
+
+      sx=sy=sz=mml=0;
+
+      for(l=0; l<k; l++) {
+        sx += v[v[i].n[l]].x;
+        sy += v[v[i].n[l]].y;
+        sz += v[v[i].n[l]].z;
+        mml += sqrt( (v[i].x-v[v[i].n[l]].x)*(v[i].x-v[v[i].n[l]].x) +
+                     (v[i].y-v[v[i].n[l]].y)*(v[i].y-v[v[i].n[l]].y) +
+                     (v[i].z-v[v[i].n[l]].z)*(v[i].z-v[v[i].n[l]].z) );
+      }
+
+      sx = sx/k - v[i].x;
+      sy = sy/k - v[i].y;
+      sz = sz/k - v[i].z;
+      mml /= k;
+
+      /* part of s normal to surface, sn = n * (s.n)
+         part of s tangent to surface, st = s - sn */
+
+      sn = sx*nx + sy*ny + sz*nz; /* this is just the s.n part - will multiply by n later */
+
+      stx = sx - nx * sn;
+      sty = sy - ny * sn;
+      stz = sz - nz * sn;
+
+      /* find intensity-based part of cost function - local max */
+
+      FDT lnew;
+      int all_inside_image=1;
+      double lthresh, local_brain_threshold=brain_threshold;
+
+      fit=0;
+      lmin=medianval;
+      lmax=threshold;
+
+      /* change local threshold if gradient threshold used */
+
+      if (gradthresh!=0) {
+        tmpf = brain_threshold + gradthresh * ( (v[i].z-cgz) / radius );
+        local_brain_threshold = MIN( 1.0 , MAX( tmpf , 0.0 ) );
+      }
+   
+      d=scale;   /* start d at 1 not 0 so that boundary is just outside brain not on the actual edge */
+      x=FTOI(v[i].x/im.xv-d*nx); 
+      y=FTOI(v[i].y/im.yv-d*ny); 
+      z=FTOI(v[i].z/im.zv-d*nz);
+      if ( (x>=0) && (x<x_size) && (y>=0) && (y<y_size) && (z>=0) && (z<z_size) ) {
+        lnew=IA(in,x,y,z);
+        lmin = MIN(lmin,lnew);
+        lmax = MAX(lmax,lnew);
+      } else {
+        all_inside_image=0;
+      }
+
+      d=COST_SEARCH;  /* furthest point inside mask, towards center of brain */
+      x=FTOI(v[i].x/im.xv-d*nx); 
+      y=FTOI(v[i].y/im.yv-d*ny); 
+      z=FTOI(v[i].z/im.zv-d*nz);
+      if ( (x>=0) && (x<x_size) && (y>=0) && (y<y_size) && (z>=0) && (z<z_size) ) {
+        lnew=IA(in,x,y,z);
+        lmin = MIN(lmin,lnew);
+      } else {
+        all_inside_image=0;
+      }
+
+      if (all_inside_image) {
+        for(d=2.0*scale;d<COST_SEARCH;d+=scale) {
+          x=FTOI((v[i].x/im.xv-d*nx)); 
+          y=FTOI((v[i].y/im.yv-d*ny)); 
+          z=FTOI((v[i].z/im.zv-d*nz));
+          lnew=IA(in,x,y,z);
+          lmin = MIN(lmin,lnew);
+          if (d<0.5*COST_SEARCH) { /* only look relatively locally for maximum intensity */
+            lmax = MAX(lmax,lnew);
+          }
+        }
+
+        /* This works fine for all image types t1, t2, pd to stop at a minimum. */ 
+        lmin = MAX(lmin,thresh2);   /* surely these two lines are now redundant? */
+        lmax = MIN(lmax,medianval); /* this effectively limits the growth in the */
+                                    /* middle of the brain while lmax>medianval */
+        lthresh = (lmax - thresh2)*local_brain_threshold + thresh2;
+
+        tmpf = lmin - lthresh;
+        fit = tmpf / ((lmax - thresh2)*0.5); /* scale range to around -1:1 */
+
+        if (output_cost) {
 	  x=(v[i].x/im.xv); y=(v[i].y/im.yv); z=(v[i].z/im.zv);
 	  if ( (x>=0) && (x<x_size) && (y>=0) && (y<y_size) &&(z>=0) && (z<z_size) )
 	    IA(raw,x,y,z)=thresh98/2 + thresh2/2 + (0.5*fit*((double)thresh98 - (double)thresh2));
-	}  
-    }
-}
+        }  
+      }
 
-#endif
+      /* estimate the update */
 
-/* }}} */
-      /* {{{ find intensity-based part of cost function - local max */
+      /* normal component of smoothing */
+      tmpf = 2 * ABS(sn) / (mml*mml);            /* 1/r ; r=local radius of curvature */
+      tmpf = 0.5 * ( 1 + tanh((tmpf-rE)*rF) );   /* f(1/r) ; this makes big r have low correction and vice versa */
 
-{
-  FDT lnew;
-  int all_inside_image=1;
-  double lthresh, local_brain_threshold=brain_threshold;
+      if ( (pass>1) && (sn > 0) ) { /* if need increased smoothing, to avoid self-intersection; */
+                                    /* only apply to concave curvature (as seen from outside surface) */
+        tmpf *= incfactor;
+        tmpf = MIN(tmpf,1);
+      }
 
-  fit=0;
-  lmin=medianval;
-  lmax=threshold;
+      tmpf = sn*tmpf;                            /* multiply normal component by correction factor */
 
-  /* {{{ change local threshold if gradient threshold used */
+      tmpf += NORMAL_MAX_UPDATE_FRACTION * ml * LAMBDA_FIT * fit ; /* combine normal smoothing and image fit */
 
-  if (gradthresh!=0)
-    {
-      tmpf = brain_threshold + gradthresh * ( (v[i].z-cgz) / radius );
-      local_brain_threshold = MIN( 1.0 , MAX( tmpf , 0.0 ) );
-    }
+      v[i].xnew = v[i].x + stx*LAMBDA_TANGENT + tmpf*nx;
+      v[i].ynew = v[i].y + sty*LAMBDA_TANGENT + tmpf*ny;
+      v[i].znew = v[i].z + stz*LAMBDA_TANGENT + tmpf*nz;
 
-/* }}} */
-
-  d=1;   /* start d at 1 not 0 so that boundary is just outside brain not on the actual edge */
-  x=FTOI((v[i].x-((double)d)*nx)/im.xv); y=FTOI((v[i].y-((double)d)*ny)/im.yv); z=FTOI((v[i].z-((double)d)*nz)/im.zv);
-  if ( (x>=0) && (x<x_size) && (y>=0) && (y<y_size) && (z>=0) && (z<z_size) )
-    {
-      lnew=IA(in,x,y,z);
-      lmin = MIN(lmin,lnew);
-      lmax = MAX(lmax,lnew);
-    }
-  else all_inside_image=0;
-
-  d=COST_SEARCH;
-  x=FTOI((v[i].x-((double)d)*nx)/im.xv); y=FTOI((v[i].y-((double)d)*ny)/im.yv); z=FTOI((v[i].z-((double)d)*nz)/im.zv);
-  if ( (x>=0) && (x<x_size) && (y>=0) && (y<y_size) && (z>=0) && (z<z_size) )
-    {
-      lnew=IA(in,x,y,z);
-      lmin = MIN(lmin,lnew);
-    }
-  else all_inside_image=0;
-
-  if (all_inside_image)
-    {
-      for(d=2;d<COST_SEARCH;d++)
-	{
-	  x=FTOI((v[i].x-((double)d)*nx)/im.xv); y=FTOI((v[i].y-((double)d)*ny)/im.yv); z=FTOI((v[i].z-((double)d)*nz)/im.zv);
-	  lnew=IA(in,x,y,z);
-	  lmin = MIN(lmin,lnew);
-	  if (d<COST_SEARCH/2) /* only look relatively locally for maximum intensity */
-	    lmax = MAX(lmax,lnew);
-	}
-
-      lmin = MAX(lmin,thresh2);   /* surely these two lines are now redundant? */
-      lmax = MIN(lmax,medianval);
-
-      lthresh = (lmax - thresh2)*local_brain_threshold + thresh2;
-
-      tmpf = lmin - lthresh;
-      fit = tmpf / ((lmax - thresh2)*0.5); /* scale range to around -1:1 */
-  
-      if (output_cost)
-	{
-	  x=(v[i].x/im.xv); y=(v[i].y/im.yv); z=(v[i].z/im.zv);
-	  if ( (x>=0) && (x<x_size) && (y>=0) && (y<y_size) &&(z>=0) && (z<z_size) )
-	    IA(raw,x,y,z)=thresh98/2 + thresh2/2 + (0.5*fit*((double)thresh98 - (double)thresh2));
-	}  
-    }
-}
-
-/* }}} */
-      /* {{{ estimate the update */
-
-/* normal component of smoothing */
-tmpf = 2 * ABS(sn) / (ml*ml);              /* 1/r ; r=local radius of curvature */
-tmpf = 0.5 * ( 1 + tanh((tmpf-rE)*rF) );   /* f(1/r) ; this makes big r have low correction and vice versa */
-
-if ( (pass>1) && (sn > 0) )  /* if need increased smoothing, to avoid self-intersection; */
-{                            /* only apply to concave curvature (as seen from outside surface) */
-  tmpf *= incfactor;
-  tmpf = MIN(tmpf,1);
-}
-
-tmpf = sn*tmpf;                                              /* multiply normal component by correction factor */
-
-tmpf += NORMAL_MAX_UPDATE_FRACTION * ml * LAMBDA_FIT * fit ; /* combine normal smoothing and image fit */
-
-v[i].xnew = v[i].x + stx*LAMBDA_TANGENT + tmpf*nx;
-v[i].ynew = v[i].y + sty*LAMBDA_TANGENT + tmpf*ny;
-v[i].znew = v[i].z + stz*LAMBDA_TANGENT + tmpf*nz;
-
-/* }}} */
     }
 
-  /* {{{ debug evolve: output single slice to show how shape evolves */
-
-#ifdef DEBUG_EVOLVE
-
-#define SPACING 5
-
-if (iters%SPACING==0)
-{
-  image_struct imd=im;
-  FILE *ofp;
-  FDT *tmpimage=(FDT *)malloc(sizeof(FDT)*x_size*y_size*z_size);
-
-  if (iters==0)
-    {
-      imd.x=im.y; imd.y=im.z; imd.z=ITERATIONS/SPACING; imd.t=1;
-      imd.xv0=im.yv; imd.yv0=im.zv; imd.zv0=1;
-      imd.min=thresh2; imd.max=thresh98;
-      imd.i=tmpimage;
-
-      sprintf(filename,"%s_debug",argv[2]);
-      minc_write(filename,imd);
-
-      sprintf(filename,"%s_debug.img",argv[2]);
-      ofp=fopen(filename,"w");
-    }
-  else
-    {
-      sprintf(filename,"%s_debug.img",argv[2]);
-      ofp=fopen(filename,"a");
-    }
-
-  memcpy(tmpimage,in,sizeof(FDT)*x_size*y_size*z_size);
-  im.i=tmpimage;
-  draw_surface(&im,hist_max,thresh2,v,pc);
-  im.i=in;
-
-  x=x_size/2+5;
-  for(z=0;z<z_size;z++)
-    for(y=0;y<y_size;y++)
-      fwrite(&tmpimage[z*y_size*x_size+y*x_size+x],sizeof(FDT),1,ofp);
-
-  free(tmpimage);
-  fclose(ofp);
-}
-
-#endif
-
-/* }}} */
-  /* {{{ debug movement */
+    /* debug movement */
 
 #ifdef DEBUG_MOVEMENT
-
-if ( (iters==50) || (iters%100==0) )
-{
-  for(mm=0, i=0; i<pc; i++)
-    mm += sqrt ( (v[i].x-v[i].xnew)*(v[i].x-v[i].xnew) + (v[i].y-v[i].ynew)*(v[i].y-v[i].ynew) + (v[i].z-v[i].znew)*(v[i].z-v[i].znew) );
-
-  mm /= pc;
-
-  printf("mean movement=%f\n",mm);
-}
-
+    if ( (iters==50) || (iters%100==0) ) {
+      for(mm=0, i=0; i<pc; i++) {
+        mm += sqrt ( (v[i].x-v[i].xnew)*(v[i].x-v[i].xnew) + (v[i].y-v[i].ynew)*(v[i].y-v[i].ynew) + 
+                     (v[i].z-v[i].znew)*(v[i].z-v[i].znew) );
+      }
+      mm /= pc;
+      printf("mean movement=%f\n",mm);
+    }
 #endif
 
-/* }}} */
-  /* {{{ update tessellation */
+    /* update tessellation */
 
-for(i=0; i<pc; i++)
-{
-  v[i].x = v[i].xnew;
-  v[i].y = v[i].ynew;
-  v[i].z = v[i].znew;
-}
+    for(i=0; i<pc; i++) {
+      v[i].x = v[i].xnew;
+      v[i].y = v[i].ynew;
+      v[i].z = v[i].znew;
+    }
+  }
 
-/* }}} */
-}
+  /* test surface for non-spherecity */
 
-/* }}} */
-      /* {{{ test surface for non-spherecity */
+  if (pass<10) {
+    int j, l;
+    double intersection=0;
 
-if (pass<10)
-{
-  int j, l;
-  double intersection=0;
-
-  for(i=0; i<pc; i++) /* loop round all points */
-      for(j=0; j<pc; j++) /* inner loop round all points */
-	{
-	  int do_it=1;
+    for(i=0; i<pc; i++) { /* loop round all points */
+      for(j=0; j<pc; j++) { /* inner loop round all points */
+        int do_it=1;
 	  
-	  if (j==i) /* other point is same as current one - don't use */
-	    do_it=0;
+        if (j==i) /* other point is same as current one - don't use */
+          do_it=0;
       
-	  for(l=0; v[i].n[l]>-1; l++) /* other point is connected to current one - don't use */
-	    if (j==v[i].n[l])
-	      do_it=0;
+        for(l=0; v[i].n[l]>-1; l++) /* other point is connected to current one - don't use */
+          if (j==v[i].n[l])
+            do_it=0;
 
-	  if ( (do_it) &&
-	       ( (v[i].x-v[j].x)*(v[i].x-v[j].x) + (v[i].y-v[j].y)*(v[i].y-v[j].y) + (v[i].z-v[j].z)*(v[i].z-v[j].z) < ml*ml ) )
-	    {
-	      double dist = sqrt ( (v[i].x-v[j].x)*(v[i].x-v[j].x) +
-				   (v[i].y-v[j].y)*(v[i].y-v[j].y) +
-				   (v[i].z-v[j].z)*(v[i].z-v[j].z) ),
-		distorig = sqrt ( (v[i].xorig-v[j].xorig)*(v[i].xorig-v[j].xorig) +
-				  (v[i].yorig-v[j].yorig)*(v[i].yorig-v[j].yorig) +
-				  (v[i].zorig-v[j].zorig)*(v[i].zorig-v[j].zorig) );
+	if ( (do_it) &&
+	   ( (v[i].x-v[j].x)*(v[i].x-v[j].x) + (v[i].y-v[j].y)*(v[i].y-v[j].y) + (v[i].z-v[j].z)*(v[i].z-v[j].z) < ml*ml ) ) {
+	  double dist = sqrt ( (v[i].x-v[j].x)*(v[i].x-v[j].x) +
+                               (v[i].y-v[j].y)*(v[i].y-v[j].y) +
+                               (v[i].z-v[j].z)*(v[i].z-v[j].z) ),
+          distorig = sqrt ( (v[i].xorig-v[j].xorig)*(v[i].xorig-v[j].xorig) +
+                            (v[i].yorig-v[j].yorig)*(v[i].yorig-v[j].yorig) +
+                            (v[i].zorig-v[j].zorig)*(v[i].zorig-v[j].zorig) );
 
-	      tmpf = (distorig/ml0) - (dist/ml);    /* orig distance (in units of mean length) - current distance */
-	      tmpf *= tmpf;                         /* weight higher values more highly */
-	      /*printf("self-intersection value %f at: %f %f %f\n",tmpf,v[i].x/im.xv,v[i].y/im.yv,v[i].z/im.zv);*/
-	      intersection += tmpf;
-	    }
-	}
+          tmpf = (distorig/ml0) - (dist/ml);    /* orig distance (in units of mean length) - current distance */
+          tmpf *= tmpf;                         /* weight higher values more highly */
+          /*printf("self-intersection value %f at: %f %f %f\n",tmpf,v[i].x/im.xv,v[i].y/im.yv,v[i].z/im.zv);*/
+          intersection += tmpf;
+        }
+      }
+    }
+    printf("self-intersection total = %f (threshold=%f)\n",intersection,(double)SELF_INTERSECTION_THRESHOLD);
 
-  printf("self-intersection total = %f (threshold=%f)\n",intersection,(double)SELF_INTERSECTION_THRESHOLD);
-
-  if (intersection>SELF_INTERSECTION_THRESHOLD)
-    {
+    if (intersection>SELF_INTERSECTION_THRESHOLD) {
       printf("thus will rerun with higher smoothness constraint\n");
       pass++;
+    } else {
+      pass=0;
     }
-  else
+  } else {
     pass=0;
+  }
 }
-else
-  pass=0;
 
-/* }}} */
-    }
+/* write brain image and mask */
 
-  /* {{{ write brain image and mask */
-
-if ( (output_mask) || (output_brain) )
-{
+if ( (output_mask) || (output_brain) ) {
   mask = (FDT *) malloc(sizeof(FDT)*x_size*y_size*z_size);
   im.i=mask;
   fill_surface(&im,v,pc);
 
-  if (apply_thresholding)
-    {
+  if (apply_thresholding) {
       for(i=0; i<z_size*y_size*x_size; i++)
 	if (in[i]<threshold)
 	  mask[i]=0;
-    }
+  }
 }
 
-if (output_mask)
-{
+if (output_mask) {
   im.min=0;
   im.max=1;
   sprintf(filename,"%s_mask",argv[2]);
-  minc_write(filename,im);
+  minc_write(argv[1],MINCBET_BYTE,filename,im);
 }
 
-if (output_brain)
-{
+if (output_brain) {
   int goesneg=0;
 
   im.min=thresh2;
@@ -725,10 +571,8 @@ if (output_brain)
   if ( (im.dtmin<0) && ((double)hist_min<0) )
     goesneg=1;
 
-  for(i=0; i<z_size*y_size*x_size; i++)
-    {
-      if ( goesneg )
-	{
+  for(i=0; i<z_size*y_size*x_size; i++) {
+      if ( goesneg ) {
 	  if (mask[i]<0.5)
 	    mask[i]=0;
 	  else
@@ -736,236 +580,193 @@ if (output_brain)
 
 	  im.min=0;
 	  im.max=(FDT)im.dtmax;
-	}
-      else
+      } else
 	mask[i]=mask[i]*in[i];
-    }
+  }
 
   im.i=mask;
-  minc_write(argv[2],im);
+  minc_write(argv[1],MINCBET_FLOAT,argv[2],im);
 }
 
-/* }}} */
-  /* {{{ output cost */
+/* output cost */
 
-if (output_cost)
-{
+if (output_cost) {
   im.i=raw;
   im.min=raw[0];
   im.max=raw[0];
 
-  for(i=0; i<z_size*y_size*x_size; i++)
-    {
+  for(i=0; i<z_size*y_size*x_size; i++) {
       if (raw[i]>im.max) im.max=raw[i];
       if (raw[i]<im.min) im.min=raw[i];
-    }
+  }
 
   sprintf(filename,"%s_cost",argv[2]);
-  minc_write(filename,im);
+  minc_write(argv[1],MINCBET_FLOAT,filename,im);
   free(raw);
 }
 
-/* }}} */
-  /* {{{ find skull and output */
+/* find skull and output */
 
-if (output_skull)
-{
+if (output_skull) {
   FDT *skull = (FDT *) malloc(sizeof(FDT)*x_size*y_size*z_size);
 
   im.i=skull;
   memset(skull,(unsigned char)0,sizeof(FDT)*x_size*y_size*z_size);
   draw_surface(&im,1,1,v,pc); /* tell skull searching where to start */
 
-  /* {{{ create skull image */
+  /* create skull image */
 
-im.i=in;
+  im.i=in;
 
-for(z=0; z<z_size; z++)
-  for(y=0; y<y_size; y++)
-    for(x=0; x<x_size; x++)
-      if (IA(skull,x,y,z)==1)
-        {
+  for(z=0; z<z_size; z++)
+    for(y=0; y<y_size; y++)
+      for(x=0; x<x_size; x++)
+        if (IA(skull,x,y,z)==1) {
 	  FDT val, val2, minval, maxval;
 	  double nx, ny, nz, d, d_max=0, d_min, grad, maxgrad, X, Y, Z, maxJ, lastJ;
 	  int xx, yy, zz, j=0;
 
-	  /* {{{ zero this point */
+	  /* zero this point */
 
-IA(skull,x,y,z)=0;
+          IA(skull,x,y,z)=0;
 
-/* }}} */
-	  /* {{{ find nearest node and setup normal */
+	  /* find nearest node and setup normal */
 
-{
-  double mind=10000000;
+          double mind=10000000;
 
-  for(i=0; i<pc; i++)
-  { 
-    tmpf = (x*im.xv-v[i].x)*(x*im.xv-v[i].x) +
-      (y*im.yv-v[i].y)*(y*im.yv-v[i].y) +
-      (z*im.zv-v[i].z)*(z*im.zv-v[i].z);
-    if (tmpf<mind)
-      {
-	j=i;
-	mind=tmpf;
-      }
-  }
+          for(i=0; i<pc; i++) { 
+            tmpf = (x*im.xv-v[i].x)*(x*im.xv-v[i].x) +
+                   (y*im.yv-v[i].y)*(y*im.yv-v[i].y) +
+                   (z*im.zv-v[i].z)*(z*im.zv-v[i].z);
+            if (tmpf<mind) {
+              j=i;
+	      mind=tmpf;
+            }
+          }
 
-  nx=v[j].nx;
-  ny=v[j].ny;
-  nz=v[j].nz;
-}
+          nx=v[j].nx;
+          ny=v[j].ny;
+          nz=v[j].nz;
 
-/* }}} */
-	  /* {{{ find minval, d_max and maxval up to SKULL_SEARCH distance */
+          /* find minval, d_max and maxval up to SKULL_SEARCH distance */
 
-maxval=threshold;
-minval=IA(in,x,y,z);
+          maxval=threshold;
+          minval=IA(in,x,y,z);
 
-	  for(d=0; d<SKULL_SEARCH; d+=scale*0.5)
-	    {
+	  for(d=0; d<SKULL_SEARCH; d+=scale*0.5) {
 	      xx=x+FTOI(d*nx/im.xv); yy=y+FTOI(d*ny/im.yv); zz=z+FTOI(d*nz/im.zv);
 
-	      if ( (xx>=0) && (xx<x_size) && (yy>=0) && (yy<y_size) && (zz>=0) && (zz<z_size) )
-		{
+	      if ( (xx>=0) && (xx<x_size) && (yy>=0) && (yy<y_size) && (zz>=0) && (zz<z_size) ) {
 		  val=IA(in,xx,yy,zz);
 
-		  if (val>maxval)
-		    {
+		  if (val>maxval) {
 		      maxval=val;
 		      d_max=d;
-		    }
+		  }
 
 		  if (val<minval)
 		      minval=val;
-		}
-	    }
+              }
+	  }
 
-/* }}} */
-	  if (maxval>threshold) /* can we see an intensity peak on the far side of the skull? */
-	    {
-	      /* {{{ find furthest out point that has small intensity */
+	  if (maxval>threshold) { /* can we see an intensity peak on the far side of the skull? */
+	      /* find furthest out point that has small intensity */
 
-maxgrad=1;
-d_min=SKULL_START;
-maxJ =-1000000;
-lastJ=-2000000;
+            maxgrad=1;
+            d_min=SKULL_START;
+            maxJ =-1000000;
+            lastJ=-2000000;
 
-	  for(d=SKULL_START; d<d_max; d+=scale*0.5)
-	    {
+	    for(d=SKULL_START; d<d_max; d+=scale*0.5) {
 	      xx=x+FTOI(d*nx/im.xv); yy=y+FTOI(d*ny/im.yv); zz=z+FTOI(d*nz/im.zv);
 
-	      if ( (xx>=0) && (xx<x_size) && (yy>=0) && (yy<y_size) && (zz>=0) && (zz<z_size) )
-		{
+	      if ( (xx>=0) && (xx<x_size) && (yy>=0) && (yy<y_size) && (zz>=0) && (zz<z_size) ) {
 		  tmpf=d/30 - IA(in,xx,yy,zz)/((double)(thresh98-thresh2));
 
 		  /*		  if ( (tmpf>maxJ) && (lastJ+1.0/30>tmpf*0.5) )*/
-		  if (tmpf>maxJ)
-		  {
+		  if (tmpf>maxJ) {
 		    maxJ=tmpf;
 		    d_min=d;
 		  }
-
 		  lastJ=tmpf;
-		}
-	    }
+              }
+            }
 
-/* }}} */
-	      /* {{{ find _first_ max gradient out from d_min */
+	    /* find _first_ max gradient out from d_min */
 
-maxgrad=0;
+            maxgrad=0;
 
-X=x+d_min*nx/im.xv; Y=y+d_min*ny/im.yv; Z=z+d_min*nz/im.zv;
+            X=x+d_min*nx/im.xv; Y=y+d_min*ny/im.yv; Z=z+d_min*nz/im.zv;
 
-if ( (X>0) && (X<x_size-1) && (Y>0) && (Y<y_size-1) && (Z>0) && (Z<z_size-1) )
-{
-  val2 = TLI(im,X,Y,Z);
+            if ( (X>0) && (X<x_size-1) && (Y>0) && (Y<y_size-1) && (Z>0) && (Z<z_size-1) ) {
+              val2 = TLI(im,X,Y,Z);
 
-	  for(d=d_min+scale; d<d_max; d+=scale*0.5)
-	    {
-	      X=x+d*nx/im.xv; Y=y+d*ny/im.yv; Z=z+d*nz/im.zv;
+              for(d=d_min+scale; d<d_max; d+=scale*0.5) {
+	        X=x+d*nx/im.xv; Y=y+d*ny/im.yv; Z=z+d*nz/im.zv;
 
-	      if ( (X>0) && (X<x_size-1) && (Y>0) && (Y<y_size-1) && (Z>0) && (Z<z_size-1) )
-		{
+	        if ( (X>0) && (X<x_size-1) && (Y>0) && (Y<y_size-1) && (Z>0) && (Z<z_size-1) ) {
 		  val = TLI(im,X,Y,Z);
 		  /*printf("%d %d %d   %f %f %f   %d %d\n",x,y,z,X,Y,Z,(int)val,(int)val2);*/
 
 		  grad=val-val2;
 		  val2=val;		 
 
-		  if (grad>0) /* this so that we don't do anything if we're still in the same voxel */
-		    {
-		      if (grad > maxgrad)
-			{
+		  if (grad>0) { /* this so that we don't do anything if we're still in the same voxel */
+		      if (grad > maxgrad) {
 			  maxgrad=grad;
 			  d_min=d;
-			}
-		      else
+                      } else {
 			d=d_max;
-		    }
+                      }
+		  }
 		}
-	    }
-}
+	      }
+            }
 
-/*printf("\n");*/
+	    /* mark this point as skull */
 
-/* }}} */
-	      /* {{{ mark this point as skull */
+            if (maxgrad>0) {
+              xx=x+FTOI(d_min*nx/im.xv);
+              yy=y+FTOI(d_min*ny/im.yv);
+              zz=z+FTOI(d_min*nz/im.zv);
 
-if (maxgrad>0)
-{
-  xx=x+FTOI(d_min*nx/im.xv);
-  yy=y+FTOI(d_min*ny/im.yv);
-  zz=z+FTOI(d_min*nz/im.zv);
+              if ( (xx>=0) && (xx<x_size) && (yy>=0) && (yy<y_size) && (zz>=0) && (zz<z_size) ) {
+                if (code_skull)
+	          IA(skull,xx,yy,zz)=(FDT)(d_min*100.0);
+                else
+	          IA(skull,xx,yy,zz)=100;
+              }
+            }
 
-  if ( (xx>=0) && (xx<x_size) && (yy>=0) && (yy<y_size) && (zz>=0) && (zz<z_size) )
-    {
-      if (code_skull)
-	IA(skull,xx,yy,zz)=(FDT)(d_min*100.0);
-      else
-	IA(skull,xx,yy,zz)=100;
-    }
-}
-
-/* }}} */
-	    }
+	  }
 	}
 
-im.i=skull;
+  im.i=skull;
 
-/* }}} */
-  /* {{{ output */
+  /* output */
 
-im.min=0;
-im.max=100;
-sprintf(filename,"%s_skull",argv[2]);
-minc_write(filename,im);
-
-/* }}} */
+  im.min=0;
+  im.max=100;
+  sprintf(filename,"%s_skull",argv[2]);
+  minc_write(argv[1],MINCBET_BYTE,filename,im);
 
   free(skull);
 }
 
-/* }}} */
-  /* {{{ output overlay (corrupts input image) */
+/* output overlay (corrupts input image) */
 
-if (output_overlay)
-{
+if (output_overlay) {
   im.min=thresh2;
   im.max=hist_max;
   im.i=in;
   draw_surface(&im,im.max,im.max,v,pc);
   sprintf(filename,"%s_overlay",argv[2]);
-  minc_write(filename,im);
+  minc_write(argv[1],MINCBET_SAME,filename,im);
 }
 
-/* }}} */
-  /* {{{ output xtopol surface (corrupts tessellation) */
+/* output xtopol surface (corrupts tessellation) */
 
-  /* {{{ output xtopol surface (corrupts tessellation) */
-
-if (output_xtopol)
-{
+if (output_xtopol) {
   int xtopol_pc=pc;
   double ax=0, ay=0, az=0, tmpf=0;
 
@@ -973,228 +774,86 @@ if (output_xtopol)
   xtopol_pc *= 2;
 #endif
 
-  for(i=0; i<xtopol_pc; i++)
-    {
+  for(i=0; i<xtopol_pc; i++) {
       ax += v[i].x;
       ay += v[i].y;
       az += v[i].z;
-    }
+  }
   ax/=(double)xtopol_pc; ay/=(double)xtopol_pc; az/=(double)xtopol_pc; 
 
   for(i=0; i<xtopol_pc; i++)
     tmpf += sqrt( (v[i].x-ax)*(v[i].x-ax) + (v[i].y-ay)*(v[i].y-ay) + (v[i].z-az)*(v[i].z-az) );
   tmpf/=(double)xtopol_pc;
 
-  for(i=0; i<xtopol_pc; i++)
-    {
+  for(i=0; i<xtopol_pc; i++) {
       v[i].x=(v[i].x-ax)/tmpf;;
       v[i].y=(v[i].y-ay)/tmpf;;
       v[i].z=(v[i].z-az)/tmpf;;
-    }
-
+  }
   xtopol_output(v,xtopol_pc,argv[2]);
 }
 
-/* }}} */
-  /* {{{ COMMENT output xtopol surface (x>0) */
+// output in brain-view .obj format
+if (output_bic) {
+  sprintf(filename,"%s.obj",argv[2]);
+  FILE * fp = fopen( filename, "w" );
+  fprintf( fp, "P 0.3 0.3 0.4 10 1 %d\n", pc );
+  for(i=0;i<pc;i++){
+    fprintf( fp, "%f %f %f\n", v[i].x, v[i].y, v[i].z );
+  }
+  fprintf( fp, "\n" );
 
-#ifdef FoldingComment
+  int ntri = 0;
+  for(i=0;i<pc;i++){
+    double nx, ny, nz, tmpf;
+    int k, l;
+    nx=ny=nz=0.0;
+    for(k=0; v[i].n[k]>-1; k++);
+    ntri += k;
+    for(l=0; l<k; l++) {
+      double adx = v[v[i].n[l]].x - v[i].x,
+             ady = v[v[i].n[l]].y - v[i].y,
+             adz = v[v[i].n[l]].z - v[i].z,
+             bdx = v[v[i].n[(l+1)%k]].x - v[i].x,
+             bdy = v[v[i].n[(l+1)%k]].y - v[i].y,
+             bdz = v[v[i].n[(l+1)%k]].z - v[i].z;
 
-if (output_xtopol)
-{
-  int xtopol_pc=pc, j, k, l, *mapping;
-  double ax=0, ay=0, az=0, tmpf=0;
-
-#ifdef DEBUG_NORMALS
-  xtopol_pc *= 2;
-#endif
-
-  mapping = (int*)malloc(sizeof(int)*xtopol_pc);
-
-  for(i=0; i<xtopol_pc; i++)
-    {
-      ax += v[i].x;
-      ay += v[i].y;
-      az += v[i].z;
+      nx += ady*bdz - adz*bdy;
+      ny += adz*bdx - adx*bdz;
+      nz += adx*bdy - ady*bdx;
     }
-  ax/=(double)xtopol_pc; ay/=(double)xtopol_pc; az/=(double)xtopol_pc; 
+    tmpf = sqrt(nx*nx+ny*ny+nz*nz);
+    nx/=(double)tmpf; ny/=(double)tmpf; nz/=(double)tmpf;
+    fprintf( fp, "%f %f %f\n", nx, ny, nz );
+  }
 
-  for(i=0; i<xtopol_pc; i++)
-    tmpf += sqrt( (v[i].x-ax)*(v[i].x-ax) + (v[i].y-ay)*(v[i].y-ay) + (v[i].z-az)*(v[i].z-az) );
-  tmpf/=(double)xtopol_pc;
+  ntri /= 3;
+  fprintf( fp, "%d\n", ntri );
+  fprintf( fp, "0 1 1 1 1\n" );
+  for( i = 1; i <= ntri; i++ ) {
+    fprintf( fp, " %d", 3*i );
+    if( i%8 == 0 ) fprintf( fp, "\n" );
+  }
 
-  j=0;
-  for(i=0; i<xtopol_pc; i++)
-    {
-      if (v[i].x-ax>0)
-	{
-	  mapping[i]=j;
-	  v[j].x=v[i].x;
-	  v[j].y=v[i].y;
-	  v[j].z=v[i].z;
-	  l=0;
-	  for(k=0; v[i].n[k]!=-1; k++)
-	    {
-	      if (v[v[i].n[k]].x-ax>0)
-		{
-		  v[j].n[l]=v[i].n[k];
-		  l++;
-		}
-	    }
-	  v[j].n[l]=-1;
-	  j++;
-	}
-    }
-
-  for(i=0; i<j; i++)
-    {
-      v[i].x=(v[i].x-ax)/tmpf;
-      v[i].y=(v[i].y-ay)/tmpf;
-      v[i].z=(v[i].z-az)/tmpf;
-      for(k=0; v[i].n[k]!=-1; k++)
-	v[i].n[k] = mapping[v[i].n[k]];
+  int count = 0;
+  for(i=0;i<pc;i++){
+    int k, l;
+    for(k=0; v[i].n[k]>-1; k++);
+    for(l=0; l<k; l++) {
+      int n1 = v[i].n[l];
+      int n2 = v[i].n[(l+1)%k];
+      if( i < n1 && i < n2 ) {
+        fprintf( fp, " %d", i ); count++; if( count%8 == 0 ) fprintf( fp, "\n" );
+        fprintf( fp, " %d", n1 ); count++; if( count%8 == 0 ) fprintf( fp, "\n" );
+        fprintf( fp, " %d", n2 ); count++; if( count%8 == 0 ) fprintf( fp, "\n" );
+      }
     }
 
-  xtopol_output(v,j,argv[2]);
+  }
+
+  fclose( fp );
 }
-
-#endif
-
-/* }}} */
-  /* {{{ COMMENT output xtopol surface (y>0) */
-
-#ifdef FoldingComment
-
-if (output_xtopol)
-{
-  int xtopol_pc=pc, j, k, l, *mapping;
-  double ax=0, ay=0, az=0, tmpf=0;
-
-#ifdef DEBUG_NORMALS
-  xtopol_pc *= 2;
-#endif
-
-  mapping = (int*)malloc(sizeof(int)*xtopol_pc);
-
-  for(i=0; i<xtopol_pc; i++)
-    {
-      ax += v[i].x;
-      ay += v[i].y;
-      az += v[i].z;
-    }
-  ax/=(double)xtopol_pc; ay/=(double)xtopol_pc; az/=(double)xtopol_pc; 
-
-  for(i=0; i<xtopol_pc; i++)
-    tmpf += sqrt( (v[i].x-ax)*(v[i].x-ax) + (v[i].y-ay)*(v[i].y-ay) + (v[i].z-az)*(v[i].z-az) );
-  tmpf/=(double)xtopol_pc;
-
-  j=0;
-  for(i=0; i<xtopol_pc; i++)
-    {
-      if (v[i].y-ay>0)
-	{
-	  mapping[i]=j;
-	  v[j].x=v[i].x;
-	  v[j].y=v[i].y;
-	  v[j].z=v[i].z;
-	  l=0;
-	  for(k=0; v[i].n[k]!=-1; k++)
-	    {
-	      if (v[v[i].n[k]].y-ay>0)
-		{
-		  v[j].n[l]=v[i].n[k];
-		  l++;
-		}
-	    }
-	  v[j].n[l]=-1;
-	  j++;
-	}
-    }
-
-  for(i=0; i<j; i++)
-    {
-      v[i].x=(v[i].x-ax)/tmpf;
-      v[i].y=(v[i].y-ay)/tmpf;
-      v[i].z=(v[i].z-az)/tmpf;
-      for(k=0; v[i].n[k]!=-1; k++)
-	v[i].n[k] = mapping[v[i].n[k]];
-    }
-
-  xtopol_output(v,j,argv[2]);
-}
-
-#endif
-
-/* }}} */
-  /* {{{ COMMENT output xtopol surface (z>0) */
-
-#ifdef FoldingComment
-
-if (output_xtopol)
-{
-  int xtopol_pc=pc, j, k, l, *mapping;
-  double ax=0, ay=0, az=0, tmpf=0;
-
-#ifdef DEBUG_NORMALS
-  xtopol_pc *= 2;
-#endif
-
-  mapping = (int*)malloc(sizeof(int)*xtopol_pc);
-
-  for(i=0; i<xtopol_pc; i++)
-    {
-      ax += v[i].x;
-      ay += v[i].y;
-      az += v[i].z;
-    }
-  ax/=(double)xtopol_pc; ay/=(double)xtopol_pc; az/=(double)xtopol_pc; 
-
-  for(i=0; i<xtopol_pc; i++)
-    tmpf += sqrt( (v[i].x-ax)*(v[i].x-ax) + (v[i].y-ay)*(v[i].y-ay) + (v[i].z-az)*(v[i].z-az) );
-  tmpf/=(double)xtopol_pc;
-
-  j=0;
-  for(i=0; i<xtopol_pc; i++)
-    {
-      if (v[i].z-az>0)
-	{
-	  mapping[i]=j;
-	  v[j].x=v[i].x;
-	  v[j].y=v[i].y;
-	  v[j].z=v[i].z;
-	  l=0;
-	  for(k=0; v[i].n[k]!=-1; k++)
-	    {
-	      if (v[v[i].n[k]].z-az>0)
-		{
-		  v[j].n[l]=v[i].n[k];
-		  l++;
-		}
-	    }
-	  v[j].n[l]=-1;
-	  j++;
-	}
-    }
-
-  for(i=0; i<j; i++)
-    {
-      v[i].x=(v[i].x-ax)/tmpf;
-      v[i].y=(v[i].y-ay)/tmpf;
-      v[i].z=(v[i].z-az)/tmpf;
-      for(k=0; v[i].n[k]!=-1; k++)
-	v[i].n[k] = mapping[v[i].n[k]];
-    }
-
-  xtopol_output(v,j,argv[2]);
-}
-
-#endif
-
-/* }}} */
-
-/* }}} */
 
   return(0);
 }
 
-/* }}} */
