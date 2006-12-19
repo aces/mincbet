@@ -1,4 +1,4 @@
-/* {{{ Copyright etc. */
+/* Copyright etc. */
 
 /*  bet.c - Brain Extraction Tool
 
@@ -34,8 +34,7 @@
     Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
     USA */
 
-/* }}} */
-/* {{{ defines, includes and typedefs */
+/* defines, includes and typedefs */
 
 #include "libss/libss.h"
 #include "libss/libavw.h"
@@ -44,8 +43,7 @@
 
 void usage(void);
 
-/* }}} */
-/* {{{ usage */
+/* usage */
 
 void usage(void)
 {
@@ -58,7 +56,10 @@ void usage(void)
   printf("-b : generate surface mask in BIC brain-view format\n");
   printf("-f <fractional threshold> : fractional intensity threshold (0->1); default=0.5; smaller values give larger brain outline estimates\n");
   printf("-g <fractional threshold> : vertical gradient in fractional intensity threshold (-1->1); default=0; positive values give larger brain outline at bottom, smaller at top\n");
+  printf("-h <threshold> : ratio for hyperintense voxels (>1) (best for t1);\n");
+  printf("                 smaller values remove more brain; default=none\n");
   printf("-t : apply thresholding to segmented brain image and mask\n\n");
+  printf("-z : percentage to crop neck from bottom of bottom (z-direction)\n\n");
 
   /*printf("-x : generate xtopol format output; file extensions=coo,dat\n");
   printf("-c : generate approximate image cost function output; fileroot=<output filroot>_cost\n");
@@ -67,12 +68,14 @@ void usage(void)
   exit(1);
 }
 
-/* {{{ main */
+/* main */
 
 #define TESSELATE_ORDER             6       /* 5 */
 #define ITERATIONS                  2000    /* 1000 */
+#define PASSES                      10      /* 10 */
 #define BRAIN_THRESHOLD_DEFAULT     0.5     /* 0.5 */
 #define COST_SEARCH                 7.0     /* 20 mm */
+#define COST_UPPER_SEARCH           1.0     /* 2 mm */
 
 // Weight for surface smoothness - tangential component. Higher value
 // will favor equal edge lengths.
@@ -81,9 +84,7 @@ void usage(void)
 // Weight for image (volume) fit. May also be viewed as an integration
 // step: a large value takes larger steps, requires fewer iterations.
 // However, it's better to have small steps, more iterations.
-// Note: LAMBDA_FIT multiplies NORMAL_MAX_UPDATE_FRACTION
-#define LAMBDA_FIT                  0.10    /* 0.1 */
-#define NORMAL_MAX_UPDATE_FRACTION  0.5     /* 0.5 */
+#define LAMBDA_FIT                  0.05    /* 0.05 */
 
 // For surface smoothness, put more weight on smoothing (normal component) when
 // radius of curvature is less than RADIUSMIN, less weight when radius of curvature
@@ -105,15 +106,18 @@ int main(argc, argv)
   int   argc;
   char  *argv [];
 {
-  /* {{{ vars */
+  /* vars */
 
 FDT *in, *mask=NULL, *raw=NULL, threshold, thresh2, thresh98,
   hist_min=0, hist_max=0, medianval;
 int x_size, y_size, z_size, x, y, z, i, pc=0, iters, pass=1,
   output_brain=1, output_bic=0, output_xtopol=0, output_cost=0, output_mask=0,
-  output_overlay=0, output_skull=0, apply_thresholding=0, code_skull=0;
+  output_overlay=0, output_skull=0, apply_thresholding=0, code_skull=0,
+  fix_upper=0;
 double cgx, cgy, cgz, radius, scale, ml=0, ml0=0, tmpf,
-  brain_threshold=BRAIN_THRESHOLD_DEFAULT, gradthresh=0, incfactor=0,
+  brain_threshold=BRAIN_THRESHOLD_DEFAULT, 
+  threshold_upper=0.0, ratio_upper=0.0, crop_neck=0.0,
+  gradthresh=0, incfactor=0,
   rE = 0.5 * (1/RADIUSMIN + 1/RADIUSMAX), rF = 6 / (1/RADIUSMIN - 1/RADIUSMAX);
 char filename[1000];
 image_struct im;
@@ -131,6 +135,11 @@ in=im.i;
 x_size=im.x; y_size=im.y; z_size=im.z;
 scale=MIN(im.xv,MIN(im.yv,im.zv)); /* minimum voxel side length */
 
+scale /= 2.0;   /* do oversampling along the normal line - much better! */
+
+int nevals = (int)( COST_SEARCH / scale );
+if( COST_SEARCH > nevals * scale ) nevals++;
+
 fprintf(stderr, "DEBUG: %d %d %g\n", x_size, y_size, scale);
 
 for (i = 3; i < argc; i++) {
@@ -141,7 +150,7 @@ for (i = 3; i < argc; i++) {
   else if (!strcmp(argv[i], "-s"))
     output_skull=1;
   else if (!strcmp(argv[i], "-S"))
-    /* {{{ colour-coded skull image */
+    /* colour-coded skull image */
 
     {
       output_skull=1;
@@ -158,7 +167,7 @@ for (i = 3; i < argc; i++) {
   else if (!strcmp(argv[i], "-t"))
     apply_thresholding=1;
   else if (!strcmp(argv[i], "-f"))
-    /* {{{ fractional brain threshold */
+    /* fractional brain threshold */
 
     {
       i++;
@@ -174,9 +183,31 @@ for (i = 3; i < argc; i++) {
 	usage();
       }
     }
-
+  else if (!strcmp(argv[i], "-h")) {
+      i++;
+      if (argc<i+1) { /* option following h hasn't been given */
+	printf("Error: no value given following -h\n");
+	usage();
+      }
+      ratio_upper=atof(argv[i]);
+      fix_upper = 1;
+    }
+  else if (!strcmp(argv[i], "-z")) {
+    /* percentage of neck to crop in z axis */
+      i++;
+      if (argc<i+1) { /* option following -z hasn't been given */
+	printf("Error: no value given following -z\n");
+	usage();
+      }
+      crop_neck=atof(argv[i]);
+      printf( "Warning: not yet implemented. Ignoring command.\n" );
+      if ( (crop_neck<=0) || (crop_neck>=100.0) ) {
+	printf("Error: value following -z must be between 0 and 100\n");
+	usage();
+      }
+    }
   else if (!strcmp(argv[i], "-g"))
-    /* {{{ gradient fractional brain threshold */
+    /* gradient fractional brain threshold */
 
     {
       i++;
@@ -207,15 +238,35 @@ if ( !output_xtopol && !output_cost && !output_skull && !output_mask && !output_
 
   /* image preprocessing */
 
+// this is not the best thing to do: remove it later.
 im.min=im.max=0;
+
+// Note: We must have threshold > thresh2 in the min/max below
+//       to avoid possible division by zero.
+// - The value of threshold is used only for the min value of lmax,
+//   so it's not very important.
+// - A larger value of thresh2 (similar to threshold) has the effect
+//   of removing more brain, in particular bright meninges, but can
+//   also forget tips of temporal lobes and cerebellum. A smaller
+//   value does not hurt.
+// - A smaller value of thresh98 causes a smaller value for medianval,
+//   thus will have the effect of including more brain tissue. However,
+//   a smaller value of thresh98 is more logical to use as it will 
+//   exclude more very bright voxels in the calculation of medianval.
+
 find_thresholds(&im,0.1);
-hist_min=im.min; hist_max=im.max; thresh2=im.thresh2; thresh98=im.thresh98; threshold=im.thresh;
+hist_min=im.min; 
+hist_max=im.max; 
+thresh2=im.thresh2; 
+thresh98=im.thresh98; 
+threshold=im.thresh;
+
 printf("hist_min=%f thresh2=%f thresh=%f thresh98=%f hist_max=%f\n",
        im.min,(double)thresh2,(double)threshold,(double)thresh98,im.max);
 printf("THRESHOLD %f\n",(double)threshold);
 
-c_of_g (im,&cgx,&cgy,&cgz);
-cgx*=im.xv; cgy*=im.yv; cgz*=im.zv;
+c_of_g (im,&cgx,&cgy,&cgz,crop_neck);   // in voxel coords
+cgx*=im.xv; cgy*=im.yv; cgz*=im.zv;     // now converted to real coords
 printf("CofG (%f,%f,%f) mm\n",cgx,cgy,cgz);
 
 radius = find_radius (im,im.xv*im.yv*im.zv);
@@ -235,6 +286,17 @@ printf("RADIUS %f\n",radius);
   medianval = median(0.5,tmpimage,i);
   printf("MEDIANVAL %f\n",(double)medianval);
   free(tmpimage);
+
+if( fix_upper ) {
+  /* Upper threshold: 
+     For t1 image, used to clip hyperintense white voxels in bone marrow.
+     Should be optimally equal to white_mean + 3 * white_stddev as obtained
+     from the preliminary classified image. 
+     For t2/pd image, should be optimally equal to csf_mean. */
+  /* This threshold is good enough. Doesn't need to be very precise. */
+  threshold_upper = medianval + 0.50 * ( thresh98 - medianval );
+  printf("UPPER THRESHOLD %f\n", threshold_upper );
+}
 
 if (output_cost) /* prepare cost function image for writing into */
 {
@@ -332,7 +394,7 @@ while (pass>0) {
         }
         ml += mml/l;
       }
-      ml /= pc;
+      ml /= pc;   // average edge length over all surface
     }
 
     /* increased smoothing for pass>1 */
@@ -348,7 +410,7 @@ while (pass>0) {
     for(i=0; i<pc; i++) {       /* calculate tessellation update */
       /* variables, and setup k and normal */
 
-      FDT lmin, lmax;
+      FDT lmin, lmax, lavg;
       int k, l;
       double d;
       double nx=v[i].nx, ny=v[i].ny, nz=v[i].nz, sx, sy, sz, mml, fit, sn, stx, sty, stz;
@@ -392,6 +454,7 @@ while (pass>0) {
       fit=0;
       lmin=medianval;
       lmax=threshold;
+      lavg=0.0;
 
       /* change local threshold if gradient threshold used */
 
@@ -401,35 +464,38 @@ while (pass>0) {
       }
    
       d=scale;   /* start d at 1 not 0 so that boundary is just outside brain not on the actual edge */
-      x=FTOI(v[i].x/im.xv-d*nx); 
-      y=FTOI(v[i].y/im.yv-d*ny); 
-      z=FTOI(v[i].z/im.zv-d*nz);
+      x=FTOI((v[i].x-d*nx)/im.xv);   // convert from real to voxel coords
+      y=FTOI((v[i].y-d*ny)/im.yv); 
+      z=FTOI((v[i].z-d*nz)/im.zv);
       if ( (x>=0) && (x<x_size) && (y>=0) && (y<y_size) && (z>=0) && (z<z_size) ) {
         lnew=IA(in,x,y,z);
         lmin = MIN(lmin,lnew);
         lmax = MAX(lmax,lnew);
+        lavg += lnew;
       } else {
         all_inside_image=0;
       }
 
       d=COST_SEARCH;  /* furthest point inside mask, towards center of brain */
-      x=FTOI(v[i].x/im.xv-d*nx); 
-      y=FTOI(v[i].y/im.yv-d*ny); 
-      z=FTOI(v[i].z/im.zv-d*nz);
+      x=FTOI((v[i].x-d*nx)/im.xv);   // convert from real to voxel coords
+      y=FTOI((v[i].y-d*ny)/im.yv); 
+      z=FTOI((v[i].z-d*nz)/im.zv);
       if ( (x>=0) && (x<x_size) && (y>=0) && (y<y_size) && (z>=0) && (z<z_size) ) {
         lnew=IA(in,x,y,z);
         lmin = MIN(lmin,lnew);
+        lavg += lnew;
       } else {
         all_inside_image=0;
       }
 
       if (all_inside_image) {
         for(d=2.0*scale;d<COST_SEARCH;d+=scale) {
-          x=FTOI((v[i].x/im.xv-d*nx)); 
-          y=FTOI((v[i].y/im.yv-d*ny)); 
-          z=FTOI((v[i].z/im.zv-d*nz));
+          x=FTOI((v[i].x-d*nx)/im.xv);   // convert from real to voxel coords
+          y=FTOI((v[i].y-d*ny)/im.yv); 
+          z=FTOI((v[i].z-d*nz)/im.zv);
           lnew=IA(in,x,y,z);
           lmin = MIN(lmin,lnew);
+          lavg += lnew;
           if (d<0.5*COST_SEARCH) { /* only look relatively locally for maximum intensity */
             lmax = MAX(lmax,lnew);
           }
@@ -440,9 +506,26 @@ while (pass>0) {
         lmax = MIN(lmax,medianval); /* this effectively limits the growth in the */
                                     /* middle of the brain while lmax>medianval */
         lthresh = (lmax - thresh2)*local_brain_threshold + thresh2;
+        fit = (lmin - lthresh) / ((lmax - thresh2)*0.5); /* scale range to around -1:1 */
 
-        tmpf = lmin - lthresh;
-        fit = tmpf / ((lmax - thresh2)*0.5); /* scale range to around -1:1 */
+        /* Stop just before a local max for hyperintense voxels. */
+
+        if( fix_upper && fit > 0 ) {
+          FDT lmax_upper=medianval;
+          /* search outside for the local max */
+          for(d=-COST_UPPER_SEARCH;d<=COST_UPPER_SEARCH;d+=scale) {
+            x=FTOI((v[i].x+d*nx)/im.xv);   // convert from real to voxel coords
+            y=FTOI((v[i].y+d*ny)/im.yv); 
+            z=FTOI((v[i].z+d*nz)/im.zv);
+            if ( (x>=0) && (x<x_size) && (y>=0) && (y<y_size) && (z>=0) && (z<z_size) ) {
+              lmax_upper = MAX(lmax_upper,IA(in,x,y,z));
+            }
+          }
+          lavg /= (FDT)nevals;
+          if( lmax_upper > threshold_upper && lmax_upper > ratio_upper * lavg ) {
+            fit = -( lmax_upper - threshold_upper ) / ( im.max - threshold_upper );
+          }
+        }
 
         if (output_cost) {
 	  x=(v[i].x/im.xv); y=(v[i].y/im.yv); z=(v[i].z/im.zv);
@@ -465,7 +548,7 @@ while (pass>0) {
 
       tmpf = sn*tmpf;                            /* multiply normal component by correction factor */
 
-      tmpf += NORMAL_MAX_UPDATE_FRACTION * ml * LAMBDA_FIT * fit ; /* combine normal smoothing and image fit */
+      tmpf += ml * LAMBDA_FIT * fit ;            /* combine normal smoothing and image fit */
 
       v[i].xnew = v[i].x + stx*LAMBDA_TANGENT + tmpf*nx;
       v[i].ynew = v[i].y + sty*LAMBDA_TANGENT + tmpf*ny;
@@ -497,39 +580,39 @@ while (pass>0) {
 
   /* test surface for non-spherecity */
 
-  if (pass<10) {
-    int j, l;
-    double intersection=0;
+  int j, l;
+  double intersection=0;
 
-    for(i=0; i<pc; i++) { /* loop round all points */
-      for(j=0; j<pc; j++) { /* inner loop round all points */
-        int do_it=1;
+  for(i=0; i<pc; i++) { /* loop round all points */
+    for(j=0; j<pc; j++) { /* inner loop round all points */
+      int do_it=1;
 	  
-        if (j==i) /* other point is same as current one - don't use */
-          do_it=0;
+      if (j==i) /* other point is same as current one - don't use */
+        do_it=0;
       
-        for(l=0; v[i].n[l]>-1; l++) /* other point is connected to current one - don't use */
-          if (j==v[i].n[l])
-            do_it=0;
+      for(l=0; v[i].n[l]>-1; l++) /* other point is connected to current one - don't use */
+        if (j==v[i].n[l])
+          do_it=0;
 
-	if ( (do_it) &&
-	   ( (v[i].x-v[j].x)*(v[i].x-v[j].x) + (v[i].y-v[j].y)*(v[i].y-v[j].y) + (v[i].z-v[j].z)*(v[i].z-v[j].z) < ml*ml ) ) {
-	  double dist = sqrt ( (v[i].x-v[j].x)*(v[i].x-v[j].x) +
-                               (v[i].y-v[j].y)*(v[i].y-v[j].y) +
-                               (v[i].z-v[j].z)*(v[i].z-v[j].z) ),
-          distorig = sqrt ( (v[i].xorig-v[j].xorig)*(v[i].xorig-v[j].xorig) +
-                            (v[i].yorig-v[j].yorig)*(v[i].yorig-v[j].yorig) +
-                            (v[i].zorig-v[j].zorig)*(v[i].zorig-v[j].zorig) );
+      if ( (do_it) &&
+         ( (v[i].x-v[j].x)*(v[i].x-v[j].x) + (v[i].y-v[j].y)*(v[i].y-v[j].y) + (v[i].z-v[j].z)*(v[i].z-v[j].z) < ml*ml ) ) {
+        double dist = sqrt ( (v[i].x-v[j].x)*(v[i].x-v[j].x) +
+                             (v[i].y-v[j].y)*(v[i].y-v[j].y) +
+                             (v[i].z-v[j].z)*(v[i].z-v[j].z) ),
+        distorig = sqrt ( (v[i].xorig-v[j].xorig)*(v[i].xorig-v[j].xorig) +
+                          (v[i].yorig-v[j].yorig)*(v[i].yorig-v[j].yorig) +
+                          (v[i].zorig-v[j].zorig)*(v[i].zorig-v[j].zorig) );
 
-          tmpf = (distorig/ml0) - (dist/ml);    /* orig distance (in units of mean length) - current distance */
-          tmpf *= tmpf;                         /* weight higher values more highly */
-          /*printf("self-intersection value %f at: %f %f %f\n",tmpf,v[i].x/im.xv,v[i].y/im.yv,v[i].z/im.zv);*/
-          intersection += tmpf;
-        }
+        tmpf = (distorig/ml0) - (dist/ml);    /* orig distance (in units of mean length) - current distance */
+        tmpf *= tmpf;                         /* weight higher values more highly */
+        /*printf("self-intersection value %f at: %f %f %f\n",tmpf,v[i].x/im.xv,v[i].y/im.yv,v[i].z/im.zv);*/
+        intersection += tmpf;
       }
     }
-    printf("self-intersection total = %f (threshold=%f)\n",intersection,(double)SELF_INTERSECTION_THRESHOLD);
+  }
+  printf("self-intersection total = %f (threshold=%f)\n",intersection,(double)SELF_INTERSECTION_THRESHOLD);
 
+  if (pass<PASSES) {
     if (intersection>SELF_INTERSECTION_THRESHOLD) {
       printf("thus will rerun with higher smoothness constraint\n");
       pass++;

@@ -353,6 +353,14 @@ void find_thresholds (image_struct *im, double fraction)
     lowest_bin=0, highest_bin=HISTOGRAM_BINS-1, validsize;
   double initmin=0, initmax=0;
 
+  /* remove top/bottom 2% from real range. Note that, below, t2 and t98
+     and the 2nd and 98th percentiles. */
+
+  initmin = 0.02 * ( im->max - im->min );
+  initmax = 0.98 * ( im->max - im->min );
+  im->min = initmin;
+  im->max = initmax;
+
   while ( (pass==1) ||
 	  ( (im->thresh98 - im->thresh2) < (im->max - im->min) / 10 ) ) /* test for very long tails */
     /* {{{ find histogram and thresholds */
@@ -430,7 +438,7 @@ void find_thresholds (image_struct *im, double fraction)
 
 /* {{{ c_of_g */
 
-void c_of_g (image_struct im, double *cgx, double *cgy, double *cgz)
+void c_of_g (image_struct im, double *cgx, double *cgy, double *cgz, double crop_neck )
 {
   FDT    *image=im.i;
   double value, total, thresh=im.thresh, thresh2=im.thresh2;

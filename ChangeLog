@@ -1,3 +1,7 @@
+2006-12-19  Claude Lepage      <claude@bic.mni.mcgill.ca>
+	* add max switch for bright meninges in t1 images
+	* sample image in normal direction at half voxel size
+
 2006-10-20  Claude Lepage      <claude@bic.mni.mcgill.ca>
 	* copy all attributes of minc header from source image
           to output mask (to include direction cosines too!)
