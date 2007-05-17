@@ -4,7 +4,7 @@ dnl Process this file with autoconf to produce a configure script.
 AC_PREREQ([2.57])
 
 # The arguments are package name, and package version.
-AC_INIT([mincbet],[1.2.2], [Andrew Janke <a.janke@gmail.com>])
+AC_INIT([mincbet],[1.3.0], [Andrew Janke <a.janke@gmail.com>])
 AC_CONFIG_SRCDIR([bet.c])
 
 AM_INIT_AUTOMAKE

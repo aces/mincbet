@@ -92,14 +92,13 @@ void usage(void)
 #define RADIUSMAX                   10.0    /* 10.0 mm */
 #define RADIUSMIN                   3.33    /* 3.33 mm */
 
-#define SELF_INTERSECTION_THRESHOLD 4000    /* 4000 */
+#define SELF_INTERSECTION_THRESHOLD 1000    /* 4000 */
 
 // Used only with -s and -S options
 #define SKULL_SEARCH                30      /* 30 mm */
 #define SKULL_START                 -3      /* -3 mm */
 
 /*#define DEBUG_NORMALS*/
-/*#define DEBUG_MOVEMENT*/
 /*#define DEBUG_EVOLVE*/
 
 int main(argc, argv)
@@ -272,29 +271,30 @@ printf("CofG (%f,%f,%f) mm\n",cgx,cgy,cgz);
 radius = find_radius (im,im.xv*im.yv*im.zv);
 printf("RADIUS %f\n",radius);
 
-  FDT *tmpimage = (FDT *) malloc(sizeof(FDT)*x_size*y_size*z_size);
+FDT *tmpimage = (FDT *) malloc(sizeof(FDT)*x_size*y_size*z_size);
 
-  i=0;
-  for(z=0; z<z_size; z++)
-    for(y=0; y<y_size; y++)
-      for(x=0; x<x_size; x++) {
-	  FDT tmp=IA(in,x,y,z);
-	  if ( (tmp>thresh2) && (tmp<thresh98) &&
-	       ( (x*im.xv-cgx)*(x*im.xv-cgx) + (y*im.yv-cgy)*(y*im.yv-cgy) + (z*im.zv-cgz)*(z*im.zv-cgz) < radius*radius ) )
-	    tmpimage[i++]=tmp;
+i=0;
+for(z=0; z<z_size; z++) {
+  for(y=0; y<y_size; y++) {
+    for(x=0; x<x_size; x++) {
+      FDT tmp=IA(in,x,y,z);
+      if ( (tmp>thresh2) && (tmp<thresh98) &&
+	   ( (x*im.xv-cgx)*(x*im.xv-cgx) + (y*im.yv-cgy)*(y*im.yv-cgy) + (z*im.zv-cgz)*(z*im.zv-cgz) < radius*radius ) ) {
+	tmpimage[i++]=tmp;
       }
-  medianval = median(0.5,tmpimage,i);
-  printf("MEDIANVAL %f\n",(double)medianval);
-  free(tmpimage);
+    }
+  }
+}
+medianval = median(0.5,tmpimage,i);
+printf("MEDIANVAL %f\n",(double)medianval);
+free(tmpimage);
 
 if( fix_upper ) {
   /* Upper threshold: 
      For t1 image, used to clip hyperintense white voxels in bone marrow.
-     Should be optimally equal to white_mean + 3 * white_stddev as obtained
-     from the preliminary classified image. 
-     For t2/pd image, should be optimally equal to csf_mean. */
-  /* This threshold is good enough. Doesn't need to be very precise. */
-  threshold_upper = medianval + 0.50 * ( thresh98 - medianval );
+     Should be about equal to white_mean + 3 * white_stddev as obtained
+     from the preliminary classified image. For t2/pd image, do nothing. */
+  threshold_upper = thresh98;
   printf("UPPER THRESHOLD %f\n", threshold_upper );
 }
 
@@ -323,6 +323,44 @@ v = (points_struc *)realloc((void *)v,sizeof(points_struc)*2*(pc+10)); /* make s
 
 while (pass>0) {
   /* initialize tessellation */
+
+  /* correct centre of mass based on current mask (replaces neck-cropping) */
+  if( pass > 1 ) {
+
+    mask = (FDT *) malloc(sizeof(FDT)*x_size*y_size*z_size);
+    im.i=mask;
+    fill_surface(&im,v,pc);
+
+    cgx = 0.0;
+    cgy = 0.0;
+    cgz = 0.0;
+    double total = 0.0;
+    double value;
+
+    for(z=0; z<z_size; z++) {
+      for(y=0; y<y_size; y++) {
+        for(x=0; x<x_size; x++) {
+          if( IA(mask,x,y,z) > 0.50 ) {
+            value = IA(in,x,y,z);
+            if( value >= threshold && value <= thresh98 ) {
+              total += 1.0;
+              cgx += (double) x;
+              cgy += (double) y;
+              cgz += (double) z;
+            }
+          }
+        }
+      }
+    }
+    cgx /= total; cgy /= total; cgz /= total;
+    cgx *= im.xv; cgy *= im.yv; cgz *= im.zv;     // now converted to real coords
+    printf("CofG (%f,%f,%f) mm\n",cgx,cgy,cgz);
+    /* assume that radius and medianval are suitable */
+
+    free( mask );
+    mask = NULL;
+    im.i = in;
+  }
 
   /* scale vertex positions for this image, set surface small and allow to grow */
   for(i=0; i<pc; i++) {
@@ -400,7 +438,7 @@ while (pass>0) {
     /* increased smoothing for pass>1 */
 
     if (pass>1) {
-      incfactor=pow((double)10.0,(double)pass);
+      incfactor=pow((double)10.0,(double)pass-1.0);
 
       if (iters>ITERATIONS*0.75) {
         incfactor=4.0*(1.0-((double)iters)/ITERATIONS)*(incfactor-1.0) + 1.0;
@@ -499,7 +537,7 @@ while (pass>0) {
           if (d<0.5*COST_SEARCH) { /* only look relatively locally for maximum intensity */
             lmax = MAX(lmax,lnew);
           }
-        }
+	}
 
         /* This works fine for all image types t1, t2, pd to stop at a minimum. */ 
         lmin = MAX(lmin,thresh2);   /* surely these two lines are now redundant? */
@@ -523,7 +561,7 @@ while (pass>0) {
           }
           lavg /= (FDT)nevals;
           if( lmax_upper > threshold_upper && lmax_upper > ratio_upper * lavg ) {
-            fit = -( lmax_upper - threshold_upper ) / ( im.max - threshold_upper );
+            fit = -( lmax_upper - threshold_upper ) / ( threshold_upper - medianval );
           }
         }
 
@@ -555,19 +593,6 @@ while (pass>0) {
       v[i].znew = v[i].z + stz*LAMBDA_TANGENT + tmpf*nz;
 
     }
-
-    /* debug movement */
-
-#ifdef DEBUG_MOVEMENT
-    if ( (iters==50) || (iters%100==0) ) {
-      for(mm=0, i=0; i<pc; i++) {
-        mm += sqrt ( (v[i].x-v[i].xnew)*(v[i].x-v[i].xnew) + (v[i].y-v[i].ynew)*(v[i].y-v[i].ynew) + 
-                     (v[i].z-v[i].znew)*(v[i].z-v[i].znew) );
-      }
-      mm /= pc;
-      printf("mean movement=%f\n",mm);
-    }
-#endif
 
     /* update tessellation */
 
@@ -617,9 +642,14 @@ while (pass>0) {
       printf("thus will rerun with higher smoothness constraint\n");
       pass++;
     } else {
-      pass=0;
+      if( pass > 1 ) {
+        pass = 1;    // now rerun with a looser smoothness constraint for a better mask
+      } else {
+        pass=0;
+      }
     }
   } else {
+    printf( "Couldn't converge mincbet. This is the best you can have.\n" );
     pass=0;
   }
 }

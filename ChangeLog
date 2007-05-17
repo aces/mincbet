@@ -1,3 +1,8 @@
+2007-05-17  Claude Lepage      <claude@bic.mni.mcgill.ca>
+        * recalculation of center of mass for tall neck
+        * better approach to compute the thresholds from the
+          histogram
+
 2006-12-19  Claude Lepage      <claude@bic.mni.mcgill.ca>
 	* add max switch for bright meninges in t1 images
 	* sample image in normal direction at half voxel size

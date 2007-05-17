@@ -243,64 +243,72 @@ FDT getp2c(image_struct im, double cgx, double cgy, double cgz, double r, double
 /* }}} */
 /* {{{ histogram and thresholds */
 
-/* {{{ find_histogram */
+/* find_histogram */
 
 /* set im->min=im->max to tell the proc to autocompute these */
 
-int find_histogram (image_struct *im, int *hist, int bins)
-{
+int find_histogram (image_struct *im, int *hist, int bins) {
+
   FDT *imagep, *image=im->i;
-  int i, size=im->t*im->z*im->y*im->x, validsize=0;
+  int i, size=im->t*im->z*im->y*im->x;
 
   /* zero histogram */
-  for(i=0; i<bins; i++)
+  for(i=0; i<bins; i++) {
     hist[i]=0;
+  }
 
-  if (im->min==im->max) /* set min and max if not already set */
-    {
-      for(im->min=im->dtmax, im->max=im->dtmin, imagep=image, i=0; i<size; i++)
-	{
-	  if ( (*imagep>im->max) && (*imagep>=im->lthresh) && (*imagep<=im->uthresh) )
-	    im->max=*imagep;
-	  if ( (*imagep<im->min) && (*imagep>=im->lthresh) && (*imagep<=im->uthresh) )
-	    im->min=*imagep;
-	  imagep++;
-	}
-      if (im->min==im->dtmax) im->min=im->lthresh; /* ie if no data found */
-      if (im->max==im->dtmin) im->max=im->uthresh; /* ie if no data found */
-      /*printf("\n%f %f\n",im->min,im->max);*/
+  /* find min/max of image */
+  im->dtmin = *image;
+  im->dtmax = *image;
+  for(imagep=image, i=0; i<size; i++) {
+    if( *imagep < im->dtmin ) im->dtmin = *imagep;
+    if( *imagep > im->dtmax ) im->dtmax = *imagep;
+    imagep++;
+  }
+
+  im->min = im->dtmin;
+  im->max = im->dtmax;
+
+  /* create histogram; the MIN is so that the maximum value falls in the last valid bin, 
+     not the (last+1) bin */
+  for(imagep=image, i=0; i<size; i++) {
+    hist[MAX(0, MIN( (int)((((double)bins)*((double)(*imagep-im->min)))/(im->max-im->min)), bins-1) )]++;
+    imagep++;
+  }
+
+  /* clip at 99.5th percentile to remove long tail of histogram,
+     then redo histogram to have a more accurate representation
+     (smaller bins) */
+
+  int size995 = (int)( 0.995 * size );
+  int sum = 0;
+  for(i=0; i<bins; i++) {
+    sum += hist[i];
+    if( sum >= size995 ) break;
+  }
+  im->max = im->dtmin + (float)i / (float)bins * ( im->dtmax - im->dtmin );
+
+  /* Recompute histogram with new upper limit. */
+
+  /* zero histogram */
+  for(i=0; i<bins; i++) {
+    hist[i]=0;
+  }
+
+  /* create histogram; the MIN is so that the maximum value falls in the last valid bin, 
+     not the (last+1) bin */
+  int validsize = 0;
+  for(imagep=image, i=0; i<size; i++) {
+    if( *imagep <= im->max ) {
+      hist[MAX(0, MIN( (int)((((double)bins)*((double)(*imagep-im->min)))/(im->max-im->min)), bins-1) )]++;
+      validsize++;
     }
-  if (im->min==im->max)
-    return -1;
+    imagep++;
+  }
 
-  /* create histogram; the MIN is so that the maximum value falls in the last valid bin, not the (last+1) bin */
-  for(imagep=image, i=0; i<size; i++)
-    {
-      if ( (*imagep>=im->lthresh) && (*imagep<=im->uthresh) )
-	{
-	  hist[MAX(0, MIN( (int)((((double)bins)*((double)(*imagep-im->min)))/(im->max-im->min)), bins-1) )]++;
-	  validsize++;
-	}
-      imagep++;
-    }
-
-   /* {{{ COMMENT print histogram */
-
-#ifdef FoldingComment
-
-  printf("min=%f max=%f\n",im->min,im->max);
-  for(i=0; i<bins; i++)
-    if ( hist[i]!=0 )
-      printf("%d %d\n",i,hist[i]);
-
-#endif
-
-/* }}} */
-
-   return validsize;
+  return validsize;
 }
 
-/* }}} */
 /* {{{ COMMENT find_roi_histogram */
 
 #ifdef FoldingComment
@@ -309,11 +317,11 @@ int find_histogram (image_struct *im, int *hist, int bins)
 
 void find_roi_histogram (image_struct *im, int x_start, int y_start, int z_start, int x_roi_size, int y_roi_size, int z_roi_size, int *hist, int bins)
 {
-  FDT *image=im->i;
-  int i,x,y,z,x_size=im->x, y_size=im->y;
-;
+	FDT *image=im->i;
+	int i,x,y,z,x_size=im->x, y_size=im->y;
+	;
 
-  /* zero histogram */
+	/* zero histogram */
   for(i=0; i<bins; i++)
     hist[i]=0;
 
@@ -345,93 +353,150 @@ void find_roi_histogram (image_struct *im, int x_start, int y_start, int z_start
 /* {{{ find thresholds */
 
 #define HISTOGRAM_BINS 1000
-#define MAX_PASSES     10
 
-void find_thresholds (image_struct *im, double fraction)
-{
-  int hist[HISTOGRAM_BINS], top_bin=0, bottom_bin=0, count, pass=1,
-    lowest_bin=0, highest_bin=HISTOGRAM_BINS-1, validsize;
-  double initmin=0, initmax=0;
+void find_thresholds (image_struct *im, double fraction) {
 
-  /* remove top/bottom 2% from real range. Note that, below, t2 and t98
-     and the 2nd and 98th percentiles. */
+  int i, imin, imax, imax_bg;
+  int hist[HISTOGRAM_BINS], lowest_bin=0, highest_bin=HISTOGRAM_BINS-1;
+  float fhist[HISTOGRAM_BINS];
+  float min_deriv1, max_deriv2, dx;
 
-  initmin = 0.02 * ( im->max - im->min );
-  initmax = 0.98 * ( im->max - im->min );
-  im->min = initmin;
-  im->max = initmax;
+  (void)find_histogram( im, hist, HISTOGRAM_BINS );
 
-  while ( (pass==1) ||
-	  ( (im->thresh98 - im->thresh2) < (im->max - im->min) / 10 ) ) /* test for very long tails */
-    /* {{{ find histogram and thresholds */
+  // do some smoothing of histogram
+  fhist[lowest_bin] = 0;
+  fhist[highest_bin] = 0;
+  for(i=1; i<highest_bin; i++) {
+    fhist[i] = (float)hist[i];
+  }
 
-{
-  FDT tmpmin;
-
-  if (pass>1) /* redo histogram with new min and max */
-    {
-      /* increase range slightly from the 2-98% range found */
-      bottom_bin=MAX(bottom_bin-1,0);           
-      top_bin=MIN(top_bin+1,HISTOGRAM_BINS-1);
-
-      /* now set new min and max on the basis of this new range */
-      tmpmin = (FDT)( im->min + ((double)bottom_bin/(double)(HISTOGRAM_BINS))*(im->max-im->min) );
-      im->max = (FDT)( im->min + ((double)(top_bin+1)/(double)(HISTOGRAM_BINS))*(im->max-im->min) );
-      im->min=tmpmin;
+  int iter = 0;
+  do {
+    iter++;
+    float prev, curr;
+    prev = fhist[0];
+    for(i=1; i<HISTOGRAM_BINS-1; i++) {
+      curr = 0.25 * ( prev + 2.0 * fhist[i] + fhist[i+1] );
+      prev = fhist[i];
+      fhist[i] = curr;
     }
+  } while( iter < 200 );
 
-  if (pass==MAX_PASSES)  /* give up and revert to full range ... */
-    im->min = im->max = MAX_PASSES;
+  // look for first local max (this is the background class)
 
-  validsize = find_histogram (im,hist,HISTOGRAM_BINS);
+  imax_bg = 0;
+  for(i=1; i<HISTOGRAM_BINS/4; i++) {
+    if( fhist[i+1] < fhist[i] ) break;
+  }
+  imax_bg = i;
 
-  if (pass==MAX_PASSES)  /* ... _but_ ignore end bins */
-    {
-      validsize-= hist[lowest_bin] + hist[highest_bin];
-      lowest_bin++;
-      highest_bin--;
-    }
+  // approximate gaussian mean at every point.
 
-  if (pass==1) /* for sensible histogramming we may alter min and max, so we must remember the initial values */
-    {
-      initmin=im->min;
-      initmax=im->max;
-    }
-
-  if (validsize<0) /* ie zero range */
-    {
-      im->thresh2=im->thresh98=im->min;
+  float sum = 0;
+  float cumul = 0;
+  for( i = 0; i < HISTOGRAM_BINS; i++ ) {
+    sum += fhist[i];
+    cumul += i * fhist[i];
+    if( cumul > sum * imax_bg ) {
       break;
     }
+  }
 
-  for(count=0, bottom_bin=lowest_bin; count<validsize/50; bottom_bin++)
-    count+=hist[bottom_bin];
-  bottom_bin--;
-  im->thresh2 = (double)( im->min + ((double)bottom_bin/(double)(HISTOGRAM_BINS))*(im->max-im->min) );
+  // find first (safe) local min after background class.
+  for( i = i; i < HISTOGRAM_BINS-1; i++ ) {
+    if( fhist[i+1] > fhist[i] ) break;
+  }
+  imin = i;
 
-  for(count=0, top_bin=highest_bin; count<validsize/50; top_bin--)
-    count+=hist[top_bin];
-  top_bin++;
-  im->thresh98 = im->min + ((double)(top_bin+1)/(double)HISTOGRAM_BINS)*(im->max - im->min);
+  // go back from imin to find tail of bg class (max second 
+  // derivative before max negative first derivative).
 
-  /*printf("lowest_bin=%d bottom_bin=%d top_bin=%d highest_bin=%d\n     hist_min=%.4e thresh2=%.4e thresh=%.4e hist_max=%.4e\n",
-	 lowest_bin,bottom_bin,top_bin,highest_bin,
-	 im->min,im->thresh2,im->thresh98,im->max);*/
+  max_deriv2 = 0;
+  for( i = imax_bg; i < imin; i++ ) {
+    // maximum positive second derivative
+    if( fhist[i+1]-2*fhist[i]+fhist[i-1] >= max_deriv2 ) {
+      max_deriv2 = fhist[i+1]-2*fhist[i]+fhist[i-1];
+      imax = i;
+    }
+  }
+  imin = imax;
 
-  if (pass==MAX_PASSES)
-    break;
+  // Cumulative distribution for thresholding.
 
-  pass++;
+  sum = 0;
+  for( i = imin+1; i < HISTOGRAM_BINS; i++ ) {
+    sum += fhist[i];
+  }
+
+  // find 99.5th percentile for last bin to consider
+
+  int last_bin;
+  cumul = 0;
+  for( i = imin+1; i < HISTOGRAM_BINS; i++ ) {
+    cumul += fhist[i];
+    if( cumul >= 0.995*sum ) break;
+  }
+  last_bin = i-1;
+
+  // find 50th percentile beyond imin, where to start searching for
+  // the last global max. This is to avoid picking csf as the global
+  // max on t1 for AD subjects with huge ventricles.
+  sum *= 0.50;   // 50th percentile of non-background tissues
+
+  cumul = 0;
+  for( i = imin+1; i < HISTOGRAM_BINS; i++ ) {
+    cumul += fhist[i];
+    if( cumul > sum ) break;
+  }
+
+  // find the absolute minimum of the first derivative (steepest decent
+  // after the last dominant tissue class).
+ 
+  imax = imin; 
+  min_deriv1 = 0;
+  for( i = i; i < last_bin; i++ ) {
+    if( fhist[i+1]-fhist[i-1] <= min_deriv1 ) {
+      min_deriv1 = fhist[i+1]-fhist[i-1];
+      imax = i;
+    }
+  }
+
+  // Find the max second derivative after the absolute minimum
+  // first derivative. This is the "bottom" of the curve.
+  max_deriv2 = 0;
+  for( i = imax; i < last_bin; i++ ) {
+    // maximum positive second derivative
+    if( fhist[i+1]-2*fhist[i]+fhist[i-1] >= max_deriv2 ) {
+      max_deriv2 = fhist[i+1]-2*fhist[i]+fhist[i-1];
+      imax = i;
+    }
+  }
+
+  dx = (float)( im->max - im->min ) / ( (float)(HISTOGRAM_BINS) );
+
+#if 0
+  for( i = 1; i < HISTOGRAM_BINS-1; i++ ) {
+    printf( "%d %g %g %g %g\n", i, im->min+i*dx, fhist[i],
+            fhist[i+1]-2*fhist[i]+fhist[i-1], fhist[i+1]-fhist[i-1] );
+  }
+#endif
+
+  if( imax_bg == imin ) imax_bg--;
+  im->thresh2 = im->min + ( imax_bg + 1 ) * dx;
+  im->thresh = im->min + ( imin + 1 ) * dx;
+  im->thresh98 = im->min + ( imax + 1 ) * dx;
+  im->max = MAX( im->max, im->thresh98 );
+#if 0
+  printf( "# t2=%g th=%g t98=%g\n", im->thresh2, im->thresh,
+          im->thresh98 );
+  printf( "# imin=%d imax=%d imax_bg=%d\n", imin, imax, imax_bg );
+  printf( "# last_bin=%d\n", last_bin );
+  fflush(stdout);
+  exit(1);
+#endif
+
 }
 
-/* }}} */
-
-  im->min=initmin;
-  im->max=initmax;
-  im->thresh = (double) ( im->thresh2 + fraction * ( im->thresh98 - im->thresh2 ) );
-}
-
-/* }}} */
 
 /* }}} */
 /* {{{ CofG, radius */
@@ -441,20 +506,22 @@ void find_thresholds (image_struct *im, double fraction)
 void c_of_g (image_struct im, double *cgx, double *cgy, double *cgz, double crop_neck )
 {
   FDT    *image=im.i;
-  double value, total, thresh=im.thresh, thresh2=im.thresh2;
+  double value, total, lower=im.thresh, upper=im.thresh98;
   int    x, y, z, x_size=im.x, y_size=im.y, z_size=im.z;
 
-  thresh -= thresh2;
   total=*cgx=*cgy=*cgz=0;
 
   for(z=0; z<z_size; z++)
     for(y=0; y<y_size; y++)
-      for(x=0; x<x_size; x++)
-	{
-	  value = ((double) image[z*x_size*y_size+y*x_size+x]) - thresh2;
-	  if (value>thresh) {
-	    total += value; *cgx += (double) x * value; *cgy += (double) y * value; *cgz += (double) z * value; }
-	}
+      for(x=0; x<x_size; x++) {
+	  value = ((double) image[z*x_size*y_size+y*x_size+x]);
+	  if (value>=lower && value<=upper) {
+	    total += value; 
+            *cgx += (double) x * value; 
+            *cgy += (double) y * value; 
+            *cgz += (double) z * value; 
+          }
+  }
   *cgx /= total; *cgy /= total; *cgz /= total;
 }
 
@@ -473,14 +540,16 @@ void c_of_g (image_struct im, double *cgx, double *cgy, double *cgz, double crop
 
 double find_radius (image_struct im, double scale)
 {
-  FDT threshold=im.thresh, *image=im.i;
+  FDT *image=im.i;
+  FDT lower=im.thresh, upper=im.thresh98;
+
   int i, size=im.x*im.y*im.z;
   double radius, count=0;
 
-  for (i=0; i<size; i++)
-    if (*image++>threshold)
-      count ++;
-
+  for (i=0; i<size; i++) {
+    if ( *image >= lower && *image <= upper ) count++;
+    image++;
+  }
   radius = pow(0.75*count*scale/M_PI,1.0/3.0);
 
   return(radius);
