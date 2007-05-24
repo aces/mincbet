@@ -642,11 +642,7 @@ while (pass>0) {
       printf("thus will rerun with higher smoothness constraint\n");
       pass++;
     } else {
-      if( pass > 1 ) {
-        pass = 1;    // now rerun with a looser smoothness constraint for a better mask
-      } else {
-        pass=0;
-      }
+      pass = 0;
     }
   } else {
     printf( "Couldn't converge mincbet. This is the best you can have.\n" );
