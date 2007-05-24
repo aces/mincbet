@@ -1,12 +1,11 @@
-%product surface-extraction
-%copyright 1998-2005 David MacDonald, June-sic Kim, Claude Lepage
-%vendor McConnell Brain Imaging Centre
+%product mincbet
+%copyright FSL bods with mods by Andrew Janke, Claude Lepage
+%vendor Oxford and BIC
 %packager Andrew Janke <a.janke@gmail.com>
 %license COPYING
 %readme README
-%description MINC surface extraction package
+%description MINC version of BET
 %version @VERSION@
-%requires bicpl
 %requires minc
 %requires volume_io
-%requires netcdf
+%requires bicpl
