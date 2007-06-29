@@ -7,5 +7,4 @@
 %description MINC version of BET
 %version @VERSION@
 %requires minc
-%requires volume_io
 %requires bicpl
