@@ -61,7 +61,7 @@ FDT getp2c(image_struct, double, double, double, double, double, double);
 int find_histogram (image_struct*, int*, int);
 /*void find_roi_histogram (image_struct*, int, int, int, int, int, int, int*, int);*/
 void find_thresholds (image_struct*, double);
-void c_of_g (image_struct, double*, double*, double*, double);
+void c_of_g (image_struct, double*, double*, double*);
 void invert_y (image_struct);
 double find_radius (image_struct, double);
 void print_image_struct(image_struct);

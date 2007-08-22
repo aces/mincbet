@@ -1,3 +1,10 @@
+2007-08-22  Claude Lepage      <claude@bic.mni.mcgill.ca>
+	* disable inward progression of surface mask inside
+	  large ventricles (e.g. Alzheimer) to avoid inverted
+          mask
+	* optimize the threshold for background/csf when the
+          background image is very noisy
+
 2007-05-17  Claude Lepage      <claude@bic.mni.mcgill.ca>
         * recalculation of center of mass for tall neck
         * better approach to compute the thresholds from the

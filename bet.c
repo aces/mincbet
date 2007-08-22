@@ -59,7 +59,6 @@ void usage(void)
   printf("-h <threshold> : ratio for hyperintense voxels (>1) (best for t1);\n");
   printf("                 smaller values remove more brain; default=none\n");
   printf("-t : apply thresholding to segmented brain image and mask\n\n");
-  printf("-z : percentage to crop neck from bottom of bottom (z-direction)\n\n");
 
   /*printf("-x : generate xtopol format output; file extensions=coo,dat\n");
   printf("-c : generate approximate image cost function output; fileroot=<output filroot>_cost\n");
@@ -115,7 +114,7 @@ int x_size, y_size, z_size, x, y, z, i, pc=0, iters, pass=1,
   fix_upper=0;
 double cgx, cgy, cgz, radius, scale, ml=0, ml0=0, tmpf,
   brain_threshold=BRAIN_THRESHOLD_DEFAULT, 
-  threshold_upper=0.0, ratio_upper=0.0, crop_neck=0.0,
+  threshold_upper=0.0, ratio_upper=0.0,
   gradthresh=0, incfactor=0,
   rE = 0.5 * (1/RADIUSMIN + 1/RADIUSMAX), rF = 6 / (1/RADIUSMIN - 1/RADIUSMAX);
 char filename[1000];
@@ -191,20 +190,6 @@ for (i = 3; i < argc; i++) {
       ratio_upper=atof(argv[i]);
       fix_upper = 1;
     }
-  else if (!strcmp(argv[i], "-z")) {
-    /* percentage of neck to crop in z axis */
-      i++;
-      if (argc<i+1) { /* option following -z hasn't been given */
-	printf("Error: no value given following -z\n");
-	usage();
-      }
-      crop_neck=atof(argv[i]);
-      printf( "Warning: not yet implemented. Ignoring command.\n" );
-      if ( (crop_neck<=0) || (crop_neck>=100.0) ) {
-	printf("Error: value following -z must be between 0 and 100\n");
-	usage();
-      }
-    }
   else if (!strcmp(argv[i], "-g"))
     /* gradient fractional brain threshold */
 
@@ -264,7 +249,7 @@ printf("hist_min=%f thresh2=%f thresh=%f thresh98=%f hist_max=%f\n",
        im.min,(double)thresh2,(double)threshold,(double)thresh98,im.max);
 printf("THRESHOLD %f\n",(double)threshold);
 
-c_of_g (im,&cgx,&cgy,&cgz,crop_neck);   // in voxel coords
+c_of_g (im,&cgx,&cgy,&cgz);   // in voxel coords
 cgx*=im.xv; cgy*=im.yv; cgz*=im.zv;     // now converted to real coords
 printf("CofG (%f,%f,%f) mm\n",cgx,cgy,cgz);
 
@@ -545,6 +530,15 @@ while (pass>0) {
                                     /* middle of the brain while lmax>medianval */
         lthresh = (lmax - thresh2)*local_brain_threshold + thresh2;
         fit = (lmin - lthresh) / ((lmax - thresh2)*0.5); /* scale range to around -1:1 */
+
+        // This is a test for inside large ventricles: if the maximum value is 
+        // small enough, like all csf and no real tissue, then assume we are in
+        // a large ventricle and don't allow inward motion. This vertex will be
+        // moved by its neighbours using the smoothness constraint. We apply this
+        // correction in the first half of the growth of the surface mask, which
+        // should be enough to grow beyond the ventricles.
+
+        if( iters <= ITERATIONS/2 && lthresh <= threshold ) fit = 0.0;
 
         /* Stop just before a local max for hyperintense voxels. */
 

@@ -356,7 +356,7 @@ void find_roi_histogram (image_struct *im, int x_start, int y_start, int z_start
 
 void find_thresholds (image_struct *im, double fraction) {
 
-  int i, imin, imax, imax_bg;
+  int i, imin, imax, imax_bg, ithresh;
   int hist[HISTOGRAM_BINS], lowest_bin=0, highest_bin=HISTOGRAM_BINS-1;
   float fhist[HISTOGRAM_BINS];
   float min_deriv1, max_deriv2, dx;
@@ -449,6 +449,12 @@ void find_thresholds (image_struct *im, double fraction) {
     if( cumul > sum ) break;
   }
 
+  // find the first local min after the tail of the bg class.
+
+  for( ithresh = imin; ithresh < i; ithresh++ ) {
+    if( fhist[ithresh+1] > fhist[ithresh] ) break;
+  }
+
   // find the absolute minimum of the first derivative (steepest decent
   // after the last dominant tissue class).
  
@@ -483,7 +489,8 @@ void find_thresholds (image_struct *im, double fraction) {
 
   if( imax_bg == imin ) imax_bg--;
   im->thresh2 = im->min + ( imax_bg + 1 ) * dx;
-  im->thresh = im->min + ( imin + 1 ) * dx;
+  // im->thresh = im->min + ( imin + 1 ) * dx;
+  im->thresh = im->min + ( ithresh + 1 ) * dx;
   im->thresh98 = im->min + ( imax + 1 ) * dx;
   im->max = MAX( im->max, im->thresh98 );
 #if 0
@@ -503,7 +510,7 @@ void find_thresholds (image_struct *im, double fraction) {
 
 /* {{{ c_of_g */
 
-void c_of_g (image_struct im, double *cgx, double *cgy, double *cgz, double crop_neck )
+void c_of_g (image_struct im, double *cgx, double *cgy, double *cgz)
 {
   FDT    *image=im.i;
   double value, total, lower=im.thresh, upper=im.thresh98;
