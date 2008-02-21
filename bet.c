@@ -58,6 +58,7 @@ void usage(void)
   printf("-g <fractional threshold> : vertical gradient in fractional intensity threshold (-1->1); default=0; positive values give larger brain outline at bottom, smaller at top\n");
   printf("-h <threshold> : ratio for hyperintense voxels (>1) (best for t1);\n");
   printf("                 smaller values remove more brain; default=none\n");
+  printf("-r : reversed intensities, like t2 and pd\n");
   printf("-t : apply thresholding to segmented brain image and mask\n\n");
 
   /*printf("-x : generate xtopol format output; file extensions=coo,dat\n");
@@ -111,7 +112,7 @@ FDT *in, *mask=NULL, *raw=NULL, threshold, thresh2, thresh98,
 int x_size, y_size, z_size, x, y, z, i, pc=0, iters, pass=1,
   output_brain=1, output_bic=0, output_xtopol=0, output_cost=0, output_mask=0,
   output_overlay=0, output_skull=0, apply_thresholding=0, code_skull=0,
-  fix_upper=0;
+  fix_upper=0, reversed_intensities=0;
 double cgx, cgy, cgz, radius, scale, ml=0, ml0=0, tmpf,
   brain_threshold=BRAIN_THRESHOLD_DEFAULT, 
   threshold_upper=0.0, ratio_upper=0.0,
@@ -137,8 +138,6 @@ scale /= 2.0;   /* do oversampling along the normal line - much better! */
 
 int nevals = (int)( COST_SEARCH / scale );
 if( COST_SEARCH > nevals * scale ) nevals++;
-
-fprintf(stderr, "DEBUG: %d %d %g\n", x_size, y_size, scale);
 
 for (i = 3; i < argc; i++) {
   if (!strcmp(argv[i], "-x"))
@@ -189,6 +188,9 @@ for (i = 3; i < argc; i++) {
       }
       ratio_upper=atof(argv[i]);
       fix_upper = 1;
+    }
+  else if (!strcmp(argv[i], "-r")) {
+      reversed_intensities=1;
     }
   else if (!strcmp(argv[i], "-g"))
     /* gradient fractional brain threshold */
@@ -505,7 +507,11 @@ while (pass>0) {
       z=FTOI((v[i].z-d*nz)/im.zv);
       if ( (x>=0) && (x<x_size) && (y>=0) && (y<y_size) && (z>=0) && (z<z_size) ) {
         lnew=IA(in,x,y,z);
-        lmin = MIN(lmin,lnew);
+        if( reversed_intensities ) {
+          lmax = MAX(lmax,lnew);   // like t2, pd
+        } else {
+          lmin = MIN(lmin,lnew);   // like t1
+        }
         lavg += lnew;
       } else {
         all_inside_image=0;
@@ -517,10 +523,18 @@ while (pass>0) {
           y=FTOI((v[i].y-d*ny)/im.yv); 
           z=FTOI((v[i].z-d*nz)/im.zv);
           lnew=IA(in,x,y,z);
-          lmin = MIN(lmin,lnew);
+          if( reversed_intensities ) {
+            lmax = MAX(lmax,lnew);   // like t2, pd
+          } else {
+            lmin = MIN(lmin,lnew);   // like t1
+          }
           lavg += lnew;
           if (d<0.5*COST_SEARCH) { /* only look relatively locally for maximum intensity */
-            lmax = MAX(lmax,lnew);
+            if( reversed_intensities ) {
+              lmin = MIN(lmin,lnew);   // like t2, pd
+            } else {
+              lmax = MAX(lmax,lnew);   // like t1
+            }
           }
 	}
 

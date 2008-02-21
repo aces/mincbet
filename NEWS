@@ -1,3 +1,10 @@
+New in Release 1.3.2
+--------------------
+        * improve thresholding when background is very noisy
+          and bg and csf merge together
+        * add special case for t2/pd (with reversed intensities)
+          for better and complete expansion of the surface
+
 New in Release 1.3.1
 --------------------
         * disable inward progression of surface mask inside

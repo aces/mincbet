@@ -1,3 +1,9 @@
+2008-02-21  Claude Lepage      <claude@bic.mni.mcgill.ca>
+	* improve thresholding when background is very noisy 
+          and bg and csf merge together
+	* add special case for t2/pd (with reversed intensities)
+          for better and complete expansion of the surface
+
 2007-08-22  Claude Lepage      <claude@bic.mni.mcgill.ca>
 	* disable inward progression of surface mask inside
 	  large ventricles (e.g. Alzheimer) to avoid inverted

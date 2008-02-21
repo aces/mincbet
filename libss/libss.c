@@ -356,7 +356,7 @@ void find_roi_histogram (image_struct *im, int x_start, int y_start, int z_start
 
 void find_thresholds (image_struct *im, double fraction) {
 
-  int i, imin, imax, imax_bg, ithresh;
+  int i, imin, imax, imax_bg, ithresh, i50;
   int hist[HISTOGRAM_BINS], lowest_bin=0, highest_bin=HISTOGRAM_BINS-1;
   float fhist[HISTOGRAM_BINS];
   float min_deriv1, max_deriv2, dx;
@@ -419,20 +419,17 @@ void find_thresholds (image_struct *im, double fraction) {
       imax = i;
     }
   }
-  imin = imax;
 
   // Cumulative distribution for thresholding.
 
   sum = 0;
-  for( i = imin+1; i < HISTOGRAM_BINS; i++ ) {
+  for( i = imax+1; i < HISTOGRAM_BINS; i++ ) {
     sum += fhist[i];
   }
 
-  // find 99.5th percentile for last bin to consider
-
   int last_bin;
   cumul = 0;
-  for( i = imin+1; i < HISTOGRAM_BINS; i++ ) {
+  for( i = imax+1; i < HISTOGRAM_BINS; i++ ) {
     cumul += fhist[i];
     if( cumul >= 0.995*sum ) break;
   }
@@ -443,15 +440,23 @@ void find_thresholds (image_struct *im, double fraction) {
   // max on t1 for AD subjects with huge ventricles.
   sum *= 0.50;   // 50th percentile of non-background tissues
 
+  // find 99.5th percentile for last bin to consider
+
   cumul = 0;
-  for( i = imin+1; i < HISTOGRAM_BINS; i++ ) {
+  for( i = imax+1; i < HISTOGRAM_BINS; i++ ) {
     cumul += fhist[i];
     if( cumul > sum ) break;
   }
+  i50 = i;
 
-  // find the first local min after the tail of the bg class.
+  // find the first local min after the tail of the bg class,
+  // but before 50th percentile. First local min could actually
+  // be after 50th percentile (imin>i50), but in this case cut
+  // off the threshold at 50th percentile. This will prevent 
+  // taking imin too high (at local min between csf and gray)
+  // if local min between bg and csf is not visible (noisy bg).
 
-  for( ithresh = imin; ithresh < i; ithresh++ ) {
+  for( ithresh = imax; ithresh < i50; ithresh++ ) {
     if( fhist[ithresh+1] > fhist[ithresh] ) break;
   }
 
@@ -460,7 +465,7 @@ void find_thresholds (image_struct *im, double fraction) {
  
   imax = imin; 
   min_deriv1 = 0;
-  for( i = i; i < last_bin; i++ ) {
+  for( i = imin; i < last_bin; i++ ) {
     if( fhist[i+1]-fhist[i-1] <= min_deriv1 ) {
       min_deriv1 = fhist[i+1]-fhist[i-1];
       imax = i;
