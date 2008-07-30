@@ -38,6 +38,8 @@
 
 #include "libss.h"
 
+#define DBG 0
+
 /* {{{ 1D median, mean */
 
 /* {{{ median */
@@ -465,7 +467,7 @@ void find_thresholds (image_struct *im, double fraction) {
  
   imax = imin; 
   min_deriv1 = 0;
-  for( i = imin; i < last_bin; i++ ) {
+  for( i = i50; i < last_bin; i++ ) {
     if( fhist[i+1]-fhist[i-1] <= min_deriv1 ) {
       min_deriv1 = fhist[i+1]-fhist[i-1];
       imax = i;
@@ -473,11 +475,13 @@ void find_thresholds (image_struct *im, double fraction) {
   }
 
   // Find the max second derivative after the absolute minimum
-  // first derivative. This is the "bottom" of the curve.
+  // first derivative. This is the "bottom" of the curve. We also
+  // need decreasing curve (negative first derivative).
   max_deriv2 = 0;
   for( i = imax; i < last_bin; i++ ) {
     // maximum positive second derivative
-    if( fhist[i+1]-2*fhist[i]+fhist[i-1] >= max_deriv2 ) {
+    if( fhist[i+1]-2*fhist[i]+fhist[i-1] >= max_deriv2 &&
+        fhist[i+1] < fhist[i-1] ) {
       max_deriv2 = fhist[i+1]-2*fhist[i]+fhist[i-1];
       imax = i;
     }
@@ -485,7 +489,7 @@ void find_thresholds (image_struct *im, double fraction) {
 
   dx = (float)( im->max - im->min ) / ( (float)(HISTOGRAM_BINS) );
 
-#if 0
+#if DBG
   for( i = 1; i < HISTOGRAM_BINS-1; i++ ) {
     printf( "%d %g %g %g %g\n", i, im->min+i*dx, fhist[i],
             fhist[i+1]-2*fhist[i]+fhist[i-1], fhist[i+1]-fhist[i-1] );
@@ -498,10 +502,10 @@ void find_thresholds (image_struct *im, double fraction) {
   im->thresh = im->min + ( ithresh + 1 ) * dx;
   im->thresh98 = im->min + ( imax + 1 ) * dx;
   im->max = MAX( im->max, im->thresh98 );
-#if 0
-  printf( "# t2=%g th=%g t98=%g\n", im->thresh2, im->thresh,
-          im->thresh98 );
-  printf( "# imin=%d imax=%d imax_bg=%d\n", imin, imax, imax_bg );
+#if DBG
+  printf( "# t2=%g th=%g t50=%g t98=%g\n", im->thresh2, im->thresh,
+          im->min + ( i50 + 1 ) * dx, im->thresh98 );
+  printf( "# i50=%d imin=%d imax=%d imax_bg=%d\n", i50, imin, imax, imax_bg );
   printf( "# last_bin=%d\n", last_bin );
   fflush(stdout);
   exit(1);

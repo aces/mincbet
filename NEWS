@@ -1,3 +1,8 @@
+New in Release 1.3.3
+--------------------
+        * improve thresholding to find local minimum for ithresh
+          (helps with t2 images)
+
 New in Release 1.3.2
 --------------------
         * improve thresholding when background is very noisy

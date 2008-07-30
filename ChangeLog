@@ -1,3 +1,7 @@
+2008-07-30  Claude Lepage      <claude@bic.mni.mcgill.ca>
+	* improve thresholding to find local minimum for ithresh
+          (helps with t2 images)
+
 2008-02-21  Claude Lepage      <claude@bic.mni.mcgill.ca>
 	* improve thresholding when background is very noisy 
           and bg and csf merge together
