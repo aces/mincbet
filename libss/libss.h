@@ -44,6 +44,7 @@ typedef struct {
     xo, yo, zo,                              /* origin */
     tr,                                      /* seconds between volumes */
     min, max, thresh2, thresh98, thresh,     /* various brightness thresholds */
+    medianval,
     lthresh, uthresh,                        /* lower and upper thresholds - some procs will ignore data outside these */
     dtmin, dtmax;                            /* min and max values for data type */
   char orient,                               /* orientation */
@@ -58,9 +59,9 @@ FDT TLI(image_struct, double, double, double);
 int make_isometric (image_struct, image_struct*);
 int p2c(int, int, int, double, double, double, double, double, double, double*, double*, double*);
 FDT getp2c(image_struct, double, double, double, double, double, double);
-int find_histogram (image_struct*, int*, int);
+int find_histogram (image_struct*, int*, int, float);
 /*void find_roi_histogram (image_struct*, int, int, int, int, int, int, int*, int);*/
-void find_thresholds (image_struct*, double);
+void find_thresholds (image_struct*);
 void c_of_g (image_struct, double*, double*, double*);
 void invert_y (image_struct);
 double find_radius (image_struct, double);

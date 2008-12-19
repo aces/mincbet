@@ -71,7 +71,8 @@ void usage(void)
 /* main */
 
 #define TESSELATE_ORDER             6       /* 5 */
-#define ITERATIONS                  2000    /* 1000 */
+#define ITERATIONS_CHECK            500     /* 500 */
+#define ITERATIONS                  2000    /* 2000 */
 #define PASSES                      10      /* 10 */
 #define BRAIN_THRESHOLD_DEFAULT     0.5     /* 0.5 */
 #define COST_SEARCH                 7.0     /* 20 mm */
@@ -92,7 +93,8 @@ void usage(void)
 #define RADIUSMAX                   10.0    /* 10.0 mm */
 #define RADIUSMIN                   3.33    /* 3.33 mm */
 
-#define SELF_INTERSECTION_THRESHOLD 1000    /* 4000 */
+#define SELF_INTERSECTION_THRESHOLD       1000    /* 4000 */
+#define MAX_SELF_INTERSECTION_THRESHOLD  50000
 
 // Used only with -s and -S options
 #define SKULL_SEARCH                30      /* 30 mm */
@@ -239,17 +241,22 @@ im.min=im.max=0;
 //   thus will have the effect of including more brain tissue. However,
 //   a smaller value of thresh98 is more logical to use as it will 
 //   exclude more very bright voxels in the calculation of medianval.
+// - A smaller value of medianval will include more brain than a
+//   larger value of medianval. medianval should be a dividing 
+//   threshold between non-tissue and tissue.
 
-find_thresholds(&im,0.1);
+find_thresholds(&im);
 hist_min=im.min; 
 hist_max=im.max; 
 thresh2=im.thresh2; 
 thresh98=im.thresh98; 
 threshold=im.thresh;
+medianval = im.medianval;
 
 printf("hist_min=%f thresh2=%f thresh=%f thresh98=%f hist_max=%f\n",
        im.min,(double)thresh2,(double)threshold,(double)thresh98,im.max);
 printf("THRESHOLD %f\n",(double)threshold);
+printf("MEDIANVAL %f\n",(double)medianval);
 
 c_of_g (im,&cgx,&cgy,&cgz);   // in voxel coords
 cgx*=im.xv; cgy*=im.yv; cgz*=im.zv;     // now converted to real coords
@@ -257,24 +264,6 @@ printf("CofG (%f,%f,%f) mm\n",cgx,cgy,cgz);
 
 radius = find_radius (im,im.xv*im.yv*im.zv);
 printf("RADIUS %f\n",radius);
-
-FDT *tmpimage = (FDT *) malloc(sizeof(FDT)*x_size*y_size*z_size);
-
-i=0;
-for(z=0; z<z_size; z++) {
-  for(y=0; y<y_size; y++) {
-    for(x=0; x<x_size; x++) {
-      FDT tmp=IA(in,x,y,z);
-      if ( (tmp>thresh2) && (tmp<thresh98) &&
-	   ( (x*im.xv-cgx)*(x*im.xv-cgx) + (y*im.yv-cgy)*(y*im.yv-cgy) + (z*im.zv-cgz)*(z*im.zv-cgz) < radius*radius ) ) {
-	tmpimage[i++]=tmp;
-      }
-    }
-  }
-}
-medianval = median(0.5,tmpimage,i);
-printf("MEDIANVAL %f\n",(double)medianval);
-free(tmpimage);
 
 if( fix_upper ) {
   /* Upper threshold: 
@@ -308,8 +297,9 @@ ml0 = sqrt( (v[0].xorig-v[v[0].n[0]].xorig)*(v[0].xorig-v[v[0].n[0]].xorig) +
 v = (points_struc *)realloc((void *)v,sizeof(points_struc)*2*(pc+10)); /* make space for storing normals */
 #endif
 
+double intersection=0;
+
 while (pass>0) {
-  /* initialize tessellation */
 
   /* correct centre of mass based on current mask (replaces neck-cropping) */
   if( pass > 1 ) {
@@ -348,6 +338,8 @@ while (pass>0) {
     mask = NULL;
     im.i = in;
   }
+
+  /* initialize tessellation */
 
   /* scale vertex positions for this image, set surface small and allow to grow */
   for(i=0; i<pc; i++) {
@@ -552,7 +544,8 @@ while (pass>0) {
         // correction in the first half of the growth of the surface mask, which
         // should be enough to grow beyond the ventricles.
 
-        if( iters <= ITERATIONS/2 && lthresh <= threshold ) fit = 0.0;
+        if( iters <= ITERATIONS/2 &&
+            !reversed_intensities && lthresh <= threshold ) fit = 0.0;
 
         /* Stop just before a local max for hyperintense voxels. */
 
@@ -609,41 +602,44 @@ while (pass>0) {
       v[i].y = v[i].ynew;
       v[i].z = v[i].znew;
     }
-  }
 
-  /* test surface for non-spherecity */
+    /* test surface for non-spherecity */
 
-  int j, l;
-  double intersection=0;
+    if( ( (iters+1)%ITERATIONS_CHECK == 0 ) || ( iters == ITERATIONS-1 ) ) {
+      int j, l;
 
-  for(i=0; i<pc; i++) { /* loop round all points */
-    for(j=0; j<pc; j++) { /* inner loop round all points */
-      int do_it=1;
+      intersection=0;
+      for(i=0; i<pc; i++) { /* loop round all points */
+        for(j=0; j<pc; j++) { /* inner loop round all points */
+          int do_it=1;
 	  
-      if (j==i) /* other point is same as current one - don't use */
-        do_it=0;
+          if (j==i) /* other point is same as current one - don't use */
+            do_it=0;
       
-      for(l=0; v[i].n[l]>-1; l++) /* other point is connected to current one - don't use */
-        if (j==v[i].n[l])
-          do_it=0;
+          for(l=0; v[i].n[l]>-1; l++) /* other point is connected to current one - don't use */
+            if (j==v[i].n[l])
+              do_it=0;
 
-      if ( (do_it) &&
-         ( (v[i].x-v[j].x)*(v[i].x-v[j].x) + (v[i].y-v[j].y)*(v[i].y-v[j].y) + (v[i].z-v[j].z)*(v[i].z-v[j].z) < ml*ml ) ) {
-        double dist = sqrt ( (v[i].x-v[j].x)*(v[i].x-v[j].x) +
-                             (v[i].y-v[j].y)*(v[i].y-v[j].y) +
-                             (v[i].z-v[j].z)*(v[i].z-v[j].z) ),
-        distorig = sqrt ( (v[i].xorig-v[j].xorig)*(v[i].xorig-v[j].xorig) +
-                          (v[i].yorig-v[j].yorig)*(v[i].yorig-v[j].yorig) +
-                          (v[i].zorig-v[j].zorig)*(v[i].zorig-v[j].zorig) );
+          if ( (do_it) &&
+             ( (v[i].x-v[j].x)*(v[i].x-v[j].x) + (v[i].y-v[j].y)*(v[i].y-v[j].y) + (v[i].z-v[j].z)*(v[i].z-v[j].z) < ml*ml ) ) {
+            double dist = sqrt ( (v[i].x-v[j].x)*(v[i].x-v[j].x) +
+                                 (v[i].y-v[j].y)*(v[i].y-v[j].y) +
+                                 (v[i].z-v[j].z)*(v[i].z-v[j].z) ),
+            distorig = sqrt ( (v[i].xorig-v[j].xorig)*(v[i].xorig-v[j].xorig) +
+                              (v[i].yorig-v[j].yorig)*(v[i].yorig-v[j].yorig) +
+                              (v[i].zorig-v[j].zorig)*(v[i].zorig-v[j].zorig) );
 
-        tmpf = (distorig/ml0) - (dist/ml);    /* orig distance (in units of mean length) - current distance */
-        tmpf *= tmpf;                         /* weight higher values more highly */
-        /*printf("self-intersection value %f at: %f %f %f\n",tmpf,v[i].x/im.xv,v[i].y/im.yv,v[i].z/im.zv);*/
-        intersection += tmpf;
+            tmpf = (distorig/ml0) - (dist/ml);    /* orig distance (in units of mean length) - current distance */
+            tmpf *= tmpf;                         /* weight higher values more highly */
+            intersection += tmpf;
+          }
+        }
       }
+      printf("self-intersection total after %d iterations = %f (threshold=%f)\n",
+             iters+1, intersection,(double)SELF_INTERSECTION_THRESHOLD);
+      if( intersection > MAX_SELF_INTERSECTION_THRESHOLD ) break;
     }
   }
-  printf("self-intersection total = %f (threshold=%f)\n",intersection,(double)SELF_INTERSECTION_THRESHOLD);
 
   if (pass<PASSES) {
     if (intersection>SELF_INTERSECTION_THRESHOLD) {

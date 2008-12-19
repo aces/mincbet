@@ -20,7 +20,6 @@ void minc_read(char *filename, image_struct * image)
    /* minc vars */
    Volume   volume;
    Real     real_min, real_max;
-   Real     voxel_min, voxel_max;
    Real     steps[MAX_VAR_DIMS];
    Real     starts[MAX_VAR_DIMS];
    int      sizes[MAX_VAR_DIMS];
@@ -40,7 +39,7 @@ void minc_read(char *filename, image_struct * image)
                  NC_UNSPECIFIED, TRUE, 0.0, 0.0, TRUE, &volume, NULL);
 
    get_volume_real_range(volume, &real_min, &real_max);
-   get_volume_voxel_range(volume, &voxel_min, &voxel_max);
+
    get_volume_sizes(volume, sizes);
    get_volume_starts(volume, starts);
    get_volume_separations(volume, steps);
