@@ -70,13 +70,22 @@ void usage(void)
 
 /* main */
 
+// #define RODENT
+
 #define TESSELATE_ORDER             6       /* 5 */
 #define ITERATIONS_CHECK            500     /* 500 */
-#define ITERATIONS                  2000    /* 2000 */
-#define PASSES                      10      /* 10 */
+#ifndef RODENT
+  #define ITERATIONS                2000    /* 2000 */
+  #define PASSES                    10      /* 10 */
+  #define COST_SEARCH               7.0     /* 20 mm */
+  #define COST_UPPER_SEARCH         1.0     /* 2 mm */
+#else
+  #define ITERATIONS                2000    /* 3000 */
+  #define PASSES                    5       /* 5 */
+  #define COST_SEARCH               0.70    /* 0.70 mm */
+  #define COST_UPPER_SEARCH         0.10    /* 0.10 mm */
+#endif
 #define BRAIN_THRESHOLD_DEFAULT     0.5     /* 0.5 */
-#define COST_SEARCH                 7.0     /* 20 mm */
-#define COST_UPPER_SEARCH           1.0     /* 2 mm */
 
 // Weight for surface smoothness - tangential component. Higher value
 // will favor equal edge lengths.
@@ -90,8 +99,13 @@ void usage(void)
 // For surface smoothness, put more weight on smoothing (normal component) when
 // radius of curvature is less than RADIUSMIN, less weight when radius of curvature
 // is more than RADIUSMAX.
-#define RADIUSMAX                   10.0    /* 10.0 mm */
-#define RADIUSMIN                   3.33    /* 3.33 mm */
+#ifndef RODENT
+  #define RADIUSMAX                 10.0    /* 10.0 mm */
+  #define RADIUSMIN                 3.33    /* 3.33 mm */
+#else
+  #define RADIUSMAX                 1.0     /* 10.0 mm */
+  #define RADIUSMIN                 0.333   /* 3.33 mm */
+#endif
 
 #define SELF_INTERSECTION_THRESHOLD       1000    /* 4000 */
 #define MAX_SELF_INTERSECTION_THRESHOLD  50000
@@ -111,7 +125,7 @@ int main(argc, argv)
 
 FDT *in, *mask=NULL, *raw=NULL, threshold, thresh2, thresh98,
   hist_min=0, hist_max=0, medianval;
-int x_size, y_size, z_size, x, y, z, i, pc=0, iters, pass=1,
+int x_size, y_size, z_size, x, y, z, i, pc=0, iters, pass=1, final_pass=0,
   output_brain=1, output_bic=0, output_xtopol=0, output_cost=0, output_mask=0,
   output_overlay=0, output_skull=0, apply_thresholding=0, code_skull=0,
   fix_upper=0, reversed_intensities=0;
@@ -119,6 +133,8 @@ double cgx, cgy, cgz, radius, scale, ml=0, ml0=0, tmpf,
   brain_threshold=BRAIN_THRESHOLD_DEFAULT, 
   threshold_upper=0.0, ratio_upper=0.0,
   gradthresh=0, incfactor=0,
+  // value of 6: small value (2) gives smoother brain, eroded gyrii (tight mesh)
+  //             large value (12) gives better defined gyrii, but danger for leaks (flexible mesh)
   rE = 0.5 * (1/RADIUSMIN + 1/RADIUSMAX), rF = 6 / (1/RADIUSMIN - 1/RADIUSMAX);
 char filename[1000];
 image_struct im;
@@ -265,6 +281,15 @@ printf("CofG (%f,%f,%f) mm\n",cgx,cgy,cgz);
 radius = find_radius (im,im.xv*im.yv*im.zv);
 printf("RADIUS %f\n",radius);
 
+// for neck cropping, would need to recompute ellipsoid each iteration
+double alen, blen, clen;
+find_ellipsoid( im, &alen, &blen, &clen );
+
+alen *= im.xv;   // one eighth of volume (could make it bigger)
+blen *= im.yv;
+clen *= im.zv;
+printf( "PRINCIPAL AXES %f %f %f\n", alen, blen, clen );
+
 if( fix_upper ) {
   /* Upper threshold: 
      For t1 image, used to clip hyperintense white voxels in bone marrow.
@@ -282,6 +307,7 @@ if (output_cost) /* prepare cost function image for writing into */
 
 object *old = &ico;                /* start with icosohedral tessellation */
 tessa((int)TESSELATE_ORDER,&old);  /* create tessellated triangles; level 5 gives 2562 points */
+normalize(old);                    /* normalize to a sphere */
 pc=points_list(old,&v);            /* convert triangles to vertex list */
 free(old);                         /* don't need triangular tessellation any more */
 
@@ -299,7 +325,7 @@ v = (points_struc *)realloc((void *)v,sizeof(points_struc)*2*(pc+10)); /* make s
 
 double intersection=0;
 
-while (pass>0) {
+while( pass > 0 || final_pass ) {
 
   /* correct centre of mass based on current mask (replaces neck-cropping) */
   if( pass > 1 ) {
@@ -339,20 +365,55 @@ while (pass>0) {
     im.i = in;
   }
 
-  /* initialize tessellation */
-
-  /* scale vertex positions for this image, set surface small and allow to grow */
-  for(i=0; i<pc; i++) {
-    v[i].x = v[i].xorig * radius * 0.5 + cgx;
-    v[i].y = v[i].yorig * radius * 0.5 + cgy;
-    v[i].z = v[i].zorig * radius * 0.5 + cgz;
+  if( !final_pass ) {
+    /* initialize tessellation */
+    /* scale vertex positions for this image, set surface small and allow to grow */
+    for(i=0; i<pc; i++) {
+      v[i].x = v[i].xorig * alen * 0.5 + cgx;
+      v[i].y = v[i].yorig * blen * 0.5 + cgy;
+      v[i].z = v[i].zorig * clen * 0.5 + cgz;
+    }
+  } else {
+//
+// Possibly new stuff for adaptive refinement on the final surface 
+//
+//  old = &ico;                        /* start with icosohedral tessellation */
+//  tessa((int)TESSELATE_ORDER,&old);  /* create tessellated triangles; level 5 gives 2562 points */
+//  /* convert points to triangles */
+//
+//
+//  int j, k, npoly = 0;
+//  for( i = 0; i < pc; i++ ) {
+//    for( k=0; v[i].n[k]>-1; k++);
+//    for( j=0; j < k; j++ ) {
+//      int i1 = v[i].n[j];
+//      int i2 = v[i].n[(j+1)%k];
+//      if( i < i1 && i < i2 ) {
+//        old->poly[npoly].pt[0].x = v[i].x;
+//        old->poly[npoly].pt[0].y = v[i].y;
+//        old->poly[npoly].pt[0].z = v[i].z;
+//        old->poly[npoly].pt[1].x = v[i1].x;
+//        old->poly[npoly].pt[1].y = v[i1].y;
+//        old->poly[npoly].pt[1].z = v[i1].z;
+//        old->poly[npoly].pt[2].x = v[i2].x;
+//        old->poly[npoly].pt[2].y = v[i2].y;
+//        old->poly[npoly].pt[2].z = v[i2].z;
+//        npoly++;
+//      }
+//    }
+//  }
+//
+//
+//  tessa((int)1,&old);                /* tessellate one more level */
+//  pc=points_list(old,&v);            /* convert triangles to vertex list */
+//  free(old);
   }
 
   /* find brain surface */
 
   for(iters=0; iters<ITERATIONS; iters++) {
-    /* find local surface normals */
 
+    /* find local surface normals */
     for(i=0; i<pc; i++) {
       double nx, ny, nz, tmpf;
       int k, l;
@@ -544,8 +605,9 @@ while (pass>0) {
         // correction in the first half of the growth of the surface mask, which
         // should be enough to grow beyond the ventricles.
 
-        if( iters <= ITERATIONS/2 &&
-            !reversed_intensities && lthresh <= threshold ) fit = 0.0;
+        if( iters <= ITERATIONS/2 && !reversed_intensities && fit < 0.0 ) {
+          fit = 0.0;
+        }
 
         /* Stop just before a local max for hyperintense voxels. */
 
@@ -576,17 +638,17 @@ while (pass>0) {
       /* estimate the update */
 
       /* normal component of smoothing */
-      tmpf = 2 * ABS(sn) / (mml*mml);            /* 1/r ; r=local radius of curvature */
-      tmpf = 0.5 * ( 1 + tanh((tmpf-rE)*rF) );   /* f(1/r) ; this makes big r have low correction and vice versa */
+      tmpf = 2 * ABS(sn) / (mml*mml + sn*sn);    /* 1/r ; r=local radius of curvature */
+      tmpf = 0.5 * ( 1 + tanh((tmpf-rE)*rF) );   /* f(1/r) ; this makes big r have low */
+                                                 /* correction and vice versa, 0 <= tmpf <= 1 */
 
       if ( (pass>1) && (sn > 0) ) { /* if need increased smoothing, to avoid self-intersection; */
                                     /* only apply to concave curvature (as seen from outside surface) */
         tmpf *= incfactor;
-        tmpf = MIN(tmpf,1);
+        tmpf = MIN(tmpf,1);         /* this gives the maximum correction 1*sn */
       }
 
       tmpf = sn*tmpf;                            /* multiply normal component by correction factor */
-
       tmpf += ml * LAMBDA_FIT * fit ;            /* combine normal smoothing and image fit */
 
       v[i].xnew = v[i].x + stx*LAMBDA_TANGENT + tmpf*nx;
@@ -647,6 +709,7 @@ while (pass>0) {
       pass++;
     } else {
       pass = 0;
+      // final_pass = 1;   // not yet - later with adaptive refinement
     }
   } else {
     printf( "Couldn't converge mincbet. This is the best you can have.\n" );

@@ -65,6 +65,7 @@ void find_thresholds (image_struct*);
 void c_of_g (image_struct, double*, double*, double*);
 void invert_y (image_struct);
 double find_radius (image_struct, double);
+void find_ellipsoid( image_struct, double *, double *, double * );
 void print_image_struct(image_struct);
 void init_image_struct(image_struct*);
 void tempfilt(image_struct, double, double);

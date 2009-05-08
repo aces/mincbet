@@ -152,9 +152,9 @@ void tessa(int maxlevel, object **old)
                  *newt = &new->poly[i*4];
             point a, b, c;
 
-            a = *normalize(midpoint(&oldt->pt[0], &oldt->pt[2]));
-            b = *normalize(midpoint(&oldt->pt[0], &oldt->pt[1]));
-            c = *normalize(midpoint(&oldt->pt[1], &oldt->pt[2]));
+            a = *midpoint(&oldt->pt[0], &oldt->pt[2]);
+            b = *midpoint(&oldt->pt[0], &oldt->pt[1]);
+            c = *midpoint(&oldt->pt[1], &oldt->pt[2]);
 
             newt->pt[0] = oldt->pt[0];
             newt->pt[1] = b;
@@ -189,21 +189,23 @@ void tessa(int maxlevel, object **old)
 /* }}} */
 /* {{{ normalize */
 
-point *normalize(point *p)
-{
-    static point r;
-    double mag;
+void normalize( object * obj ) {
 
-    r = *p;
-    mag = r.x * r.x + r.y * r.y + r.z * r.z;
-    if (mag != 0.0) {
+  int  i, j;
+
+  for (i = 0; i < obj->npoly; i++) {
+    triangle * lp = &obj->poly[i];
+    for (j = 0; j < 3; j++) {
+      point r = lp->pt[j];
+      double mag = r.x * r.x + r.y * r.y + r.z * r.z;
+      if (mag != 0.0) {
         mag = 1.0 / sqrt(mag);
-        r.x *= mag;
-        r.y *= mag;
-        r.z *= mag;
+        lp->pt[j].x *= mag;
+        lp->pt[j].y *= mag;
+        lp->pt[j].z *= mag;
+      }
     }
-
-    return &r;
+  }
 }
 
 /* }}} */

@@ -399,7 +399,6 @@ void find_thresholds (image_struct *im) {
       }
     } while( iter < 10 );
   }
-
   hist[0] = 0;
   hist[HISTOGRAM_BINS-1] = 0;
   for(i=0; i<=HISTOGRAM_BINS-1; i++) {
@@ -412,47 +411,17 @@ void find_thresholds (image_struct *im) {
   float newhist[MAX_HISTOGRAM_BINS];
   do {
     iter++;
-    /* Try to detect spikes from the binning with minc ranges, due 
-       to different min/max values per slice. */
-    float max_f = 0.0;
-    for(i=1; i<HISTOGRAM_BINS-1; i++) {
-      /* look for an unusual local max */
-      if( fhist[i] > fhist[i-1] && fhist[i] > fhist[i+1] ) {
-        if( fhist[i] > 0.6 * ( fhist[i-1] + fhist[i+1] ) ) {
-          fhist[i] = 0.5 * ( fhist[i-1] + fhist[i+1] );
-        }
-      } else {
-        /* look for an unusual local min */
-        if( fhist[i] < fhist[i-1] && fhist[i] < fhist[i+1] ) {
-          if( fhist[i] < 0.4 * ( fhist[i-1] + fhist[i+1] ) ) {
-            fhist[i] = 0.5 * ( fhist[i-1] + fhist[i+1] );
-          }
-        }
+    /* Histogram smoothing using (-N,N) neighbourhood. This removes
+       spikes in the histogram due to minc binning. */
+    int j, N = 3;
+    for(i=N; i<HISTOGRAM_BINS-N; i++) {
+      float sum_y = 0.0;
+      for( j = -N; j <= N; j++ ) {
+        sum_y += fhist[i+j];
       }
-      if( fhist[i] > max_f ) max_f = fhist[i];
+      fhist[i] = sum_y / (float)(2*N+1);
     }
-
-    /* deconvolution and smoothing */
-    float dt_h = 0.1 / max_f;
-    float prev = fhist[0];
-    for(i=1; i<HISTOGRAM_BINS-1; i++) {
-      float deriv1 =  fhist[i+1] - prev;
-      float deriv2 = fhist[i+1] - 2.0 * fhist[i] + prev;
-      float sign = 1.0;
-      if( deriv1 > 0.0 ) {
-        deriv1 = fhist[i+1] * fhist[i+1] - fhist[i] * fhist[i];
-      } else {
-        sign = -sign;
-        deriv1 = fhist[i] * fhist[i] - prev * prev;
-      }
-      if( deriv2 < 0.0 ) sign = -sign;
-      float curr = fhist[i] + dt_h * sign * deriv1 + 0.5 * deriv2;
-      if( curr > fhist[i] ) curr = fhist[i];
-      prev = fhist[i];
-      fhist[i] = curr;
-    }
-
-  } while( iter < HISTOGRAM_BINS / 20 );   // 50 iters per 1000 bins
+  } while( iter < 5 );
 
   /* blur distribution (exactly like a Bezier curve) */
   iter = 0;
@@ -465,7 +434,7 @@ void find_thresholds (image_struct *im) {
       prev = fhist[i];
       fhist[i] = curr;
     }
-  } while( iter < HISTOGRAM_BINS / 5 );   // 200 iters per 1000 bins
+  } while( iter < HISTOGRAM_BINS / 50 );   // 20 iters per 1000 bins
 
   // look for first local max (this is the background class)
 
@@ -600,7 +569,8 @@ void find_thresholds (image_struct *im) {
   }
       
   imed = ( ilocal_max + imin ) / 2;  // skip any local max for csf
-
+#if 0
+  /* this no longer seems necessary with new histogram smoothing */
   max_deriv1 = 0;
   for( i = imed; i < ilocal_max; i++ ) {
     if( fhist[i+1]-fhist[i-1] >= max_deriv1 ) {
@@ -609,7 +579,7 @@ void find_thresholds (image_struct *im) {
     }
   }
   imed = ( imed + ilocal_max ) / 2;
-
+#endif
   dx = (float)( im->max - im->min ) / ( (float)(HISTOGRAM_BINS) );
 
 #if DBG
@@ -637,6 +607,7 @@ void find_thresholds (image_struct *im) {
   im->medianval = im->min + ( imed + 1 ) * dx;
   im->thresh98 = im->min + ( imax + 1 ) * dx;
   im->max = MAX( im->max, im->thresh98 );
+
 #if DBG
   printf( "# t2=%g th=%g med=%g t98=%g\n", im->thresh2, im->thresh,
           im->medianval, im->thresh98 );
@@ -706,6 +677,67 @@ double find_radius (image_struct im, double scale)
 
   return(radius);
 }
+
+/* Find the length of the principal axes for the best ellipsoid
+   about the centre of mass of the head. This works well for the
+   rat with a stretched head. */
+
+void find_ellipsoid( image_struct im,
+                     double * alen, double * blen, double * clen ) {
+
+  FDT *image=im.i;
+  FDT lower=im.thresh, upper=im.thresh98;
+  int x, y, z;
+  int x_size=im.x, y_size=im.y, z_size=im.z;
+  double value, count = 0.0;
+  double cgx, cgy, cgz;
+  int * xhisto = (int*)malloc( x_size * sizeof( int ) );
+  int * yhisto = (int*)malloc( y_size * sizeof( int ) );
+  int * zhisto = (int*)malloc( z_size * sizeof( int ) );
+  for( x=0; x<x_size; x++ ) xhisto[x] = 0;
+  for( y=0; y<y_size; y++ ) yhisto[y] = 0;
+  for( z=0; z<z_size; z++ ) zhisto[z] = 0;
+
+  c_of_g( im, &cgx, &cgy, &cgz );
+
+  for( z=0; z<z_size; z++ ) {
+    for( y=0; y<y_size; y++ ) {
+      for( x=0; x<x_size; x++ ) {
+        value = ((double) image[z*x_size*y_size+y*x_size+x]);
+        if( value >= lower && value <= upper ) {
+          count++;
+          xhisto[(int)abs( (double)x - cgx )]++;
+          yhisto[(int)abs( (double)y - cgy )]++;
+          zhisto[(int)abs( (double)z - cgz )]++;
+        }
+      }
+    }
+  }
+  double thresh = 0.5*count;
+  int sum = 0;
+  for( x=0; x<x_size; x++ ) {
+    sum += xhisto[x];
+    if( sum >= thresh ) break;
+  }
+  sum = 0;
+  for( y=0; y<y_size; y++ ) {
+    sum += yhisto[y];
+    if( sum >= thresh ) break;
+  }
+  sum = 0;
+  for( z=0; z<z_size; z++ ) {
+    sum += zhisto[z];
+    if( sum >= thresh ) break;
+  }
+  double scale = pow( 0.75 * count / 
+                      ( M_PI * (double)x * (double)y * (double)z ), 
+                      1.0 / 3.0 );
+  *alen = scale * x;
+  *blen = scale * y;
+  *clen = scale * z;
+
+}
+
 
 /* }}} */
 

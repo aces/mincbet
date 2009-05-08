@@ -1,3 +1,9 @@
+2009-05-08  Claude Lepage      <claude@bic.mni.mcgill.ca>
+	* rodent version - a first try towards adaptive refinement
+	* use an ellipsoid instead of a sphere as starting point
+	* better histogram smoothing before thresholding
+	* improvement for large ventricles
+
 2008-12-19  Claude Lepage      <claude@bic.mni.mcgill.ca>
 	* yet some more improvements for thresholding (helps
           with 3-T images)

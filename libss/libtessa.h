@@ -116,7 +116,7 @@ extern object ico;
 /* {{{ proc defs */
 
 void tessa(int, object**);
-point *normalize(point*);
+void normalize( object * );
 point *midpoint(point*, point*);
 void flip_object(object*);
 void print_object(object*, int);
