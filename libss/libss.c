@@ -624,7 +624,7 @@ void find_thresholds (image_struct *im) {
 /* }}} */
 /* {{{ CofG, radius */
 
-/* {{{ c_of_g */
+/* {{{ c_of_g in voxel coordinates */
 
 void c_of_g (image_struct im, double *cgx, double *cgy, double *cgz)
 {
@@ -673,7 +673,7 @@ double find_radius (image_struct im, double scale)
     if ( *image >= lower && *image <= upper ) count++;
     image++;
   }
-  radius = pow(0.75*count*scale/M_PI,1.0/3.0);
+  radius = pow(0.75*count*scale/M_PI,1.0/3.0);  // in real coords
 
   return(radius);
 }
@@ -698,7 +698,7 @@ void find_ellipsoid( image_struct im,
   for( y=0; y<y_size; y++ ) yhisto[y] = 0;
   for( z=0; z<z_size; z++ ) zhisto[z] = 0;
 
-  c_of_g( im, &cgx, &cgy, &cgz );
+  c_of_g( im, &cgx, &cgy, &cgz ); // in voxel coords
 
   for( z=0; z<z_size; z++ ) {
     for( y=0; y<y_size; y++ ) {
@@ -732,9 +732,9 @@ void find_ellipsoid( image_struct im,
   double scale = pow( 0.75 * count / 
                       ( M_PI * (double)x * (double)y * (double)z ), 
                       1.0 / 3.0 );
-  *alen = scale * x;
-  *blen = scale * y;
-  *clen = scale * z;
+  *alen = scale * im.xv * x;   // in real coords
+  *blen = scale * im.yv * y;
+  *clen = scale * im.zv * z;
 
 }
 

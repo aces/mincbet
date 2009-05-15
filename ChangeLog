@@ -1,6 +1,6 @@
 2009-05-08  Claude Lepage      <claude@bic.mni.mcgill.ca>
 	* rodent version - a first try towards adaptive refinement
-	* use an ellipsoid instead of a sphere as starting point
+	* use an ellipsoid instead of a sphere as starting point (rodent)
 	* better histogram smoothing before thresholding
 	* improvement for large ventricles
 

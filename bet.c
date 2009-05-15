@@ -278,17 +278,18 @@ c_of_g (im,&cgx,&cgy,&cgz);   // in voxel coords
 cgx*=im.xv; cgy*=im.yv; cgz*=im.zv;     // now converted to real coords
 printf("CofG (%f,%f,%f) mm\n",cgx,cgy,cgz);
 
-radius = find_radius (im,im.xv*im.yv*im.zv);
-printf("RADIUS %f\n",radius);
-
 // for neck cropping, would need to recompute ellipsoid each iteration
 double alen, blen, clen;
-find_ellipsoid( im, &alen, &blen, &clen );
-
-alen *= im.xv;   // one eighth of volume (could make it bigger)
-blen *= im.yv;
-clen *= im.zv;
-printf( "PRINCIPAL AXES %f %f %f\n", alen, blen, clen );
+#ifdef RODENT
+  find_ellipsoid( im, &alen, &blen, &clen );
+  printf( "PRINCIPAL AXES %f %f %f\n", alen, blen, clen );
+#else
+  radius = find_radius (im,im.xv*im.yv*im.zv);
+  printf("RADIUS %f\n",radius);
+  alen = radius;
+  blen = radius;
+  clen = radius;
+#endif
 
 if( fix_upper ) {
   /* Upper threshold: 
