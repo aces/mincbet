@@ -568,18 +568,28 @@ void find_thresholds (image_struct *im) {
     }
   }
       
+  /* this helps when there is a large separation between csf and
+     gm classes. This often occurs when there is a distinct csf
+     class not part of bg. In this case, must make sure to skip
+     any local max for csf. */
+
   imed = ( ilocal_max + imin ) / 2;  // skip any local max for csf
-#if 0
-  /* this no longer seems necessary with new histogram smoothing */
   max_deriv1 = 0;
+  int imax_grad = imed;
+  for( i = imed; i > imin; i-- ) {
+    if( fhist[i]<fhist[i-1] ) break;
+    if( fhist[i+1]-fhist[i-1] >= max_deriv1 ) {
+      max_deriv1 = fhist[i+1]-fhist[i-1];
+      imax_grad= i;
+    }
+  }
   for( i = imed; i < ilocal_max; i++ ) {
     if( fhist[i+1]-fhist[i-1] >= max_deriv1 ) {
       max_deriv1 = fhist[i+1]-fhist[i-1];
-      imed = i;
+      imax_grad= i;
     }
   }
-  imed = ( imed + ilocal_max ) / 2;
-#endif
+  imed = imax_grad;   /* this seems to be the best compromise */
   dx = (float)( im->max - im->min ) / ( (float)(HISTOGRAM_BINS) );
 
 #if DBG
