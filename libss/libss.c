@@ -405,10 +405,8 @@ void find_thresholds (image_struct *im) {
     fhist[i] = hist[i];
   }
 
-  /* smoothing and deconvolution of histogram */
-
+  /* smoothing of histogram */
   iter = 0;
-  float newhist[MAX_HISTOGRAM_BINS];
   do {
     iter++;
     /* Histogram smoothing using (-N,N) neighbourhood. This removes
@@ -462,11 +460,28 @@ void find_thresholds (image_struct *im) {
     }
   }
 
-  // find first (safe) local min after background class.
-  for( i = i; i < HISTOGRAM_BINS-1; i++ ) {
-    if( fhist[i+1] > fhist[i] ) break;
-  }
+  // special cut-off for imin when bg class is so dominant there
+  // is no local minimum in histogram. Don't look for local min
+  // past 50th percentile of estimated tissue classes.
+
   imin = i;
+  sum = 0.0;
+  for( i = imin; i < HISTOGRAM_BINS-1; i++ ) {
+    sum += fhist[i];
+  }
+  sum *= 0.5;
+  cumul = 0.0;
+  for( i = imin; i <= HISTOGRAM_BINS-1; i++ ) {
+    cumul += fhist[i];
+    if( cumul > sum ) break;
+  }
+
+  // find first (safe) local min after background class, but before
+  // 50th percentile of tissue classes.
+
+  for( imin = imin; imin < i; imin++ ) {
+    if( fhist[imin+1] > fhist[imin] ) break;
+  }
 
   // find last local max after imin; use it to find tail of bg class
   // at that level.
@@ -617,6 +632,7 @@ void find_thresholds (image_struct *im) {
   im->medianval = im->min + ( imed + 1 ) * dx;
   im->thresh98 = im->min + ( imax + 1 ) * dx;
   im->max = MAX( im->max, im->thresh98 );
+
 
 #if DBG
   printf( "# t2=%g th=%g med=%g t98=%g\n", im->thresh2, im->thresh,
