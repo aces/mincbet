@@ -443,10 +443,11 @@ void find_thresholds (image_struct *im) {
   sum /= (HISTOGRAM_BINS/4);
 
   imax_bg = 0;
-  for(i=1; i<HISTOGRAM_BINS/4; i++) {
-    if( fhist[i+1] < fhist[i] && fhist[i] > sum ) break;
+  for(i=imax_bg; i<HISTOGRAM_BINS/4; i++) {
+    if( fhist[i] <= sum ) continue;
+    if( fhist[i] > fhist[imax_bg] && fhist[i+1] < fhist[i] ) imax_bg = i;
   }
-  imax_bg = i;
+  if( imax_bg == 0 ) imax_bg = i;  // no local max found, to take end point
 
   // approximate gaussian mean at every point.
 
@@ -700,6 +701,28 @@ double find_radius (image_struct im, double scale)
     image++;
   }
   radius = pow(0.75*count*scale/M_PI,1.0/3.0);  // in real coords
+
+  // try correction for large ventricles.
+
+  int x, y, z;
+  double count_bg = 0.0;
+  double rad_sq = radius * radius;
+  double cgx, cgy, cgz;
+  c_of_g( im, &cgx, &cgy, &cgz ); // in voxel coords
+
+  for( z=0; z<im.z; z++ ) {
+    for( y=0; y<im.y; y++ ) {
+      for( x=0; x<im.x; x++ ) {
+        if( (x-cgx)*(x-cgx) + (y-cgy)*(y-cgy) + (z-cgz)*(z-cgz) <= rad_sq ) {
+          double value = ((double) im.i[z*im.x*im.y+y*im.x+x]);
+          if( value < lower ) count_bg++;
+        }
+      }
+    }
+  }
+  double factor = pow( 1.0 + count_bg / count, 1.0/3.0 );
+  printf( "radius correction is %g\n", factor );
+  radius *= factor;
 
   return(radius);
 }

@@ -70,6 +70,7 @@ void usage(void)
 
 /* main */
 
+// #define ADAPTIVE
 // #define RODENT
 
 #define TESSELATE_ORDER             6       /* 5 */
@@ -107,7 +108,7 @@ void usage(void)
   #define RADIUSMIN                 0.333   /* 3.33 mm */
 #endif
 
-#define SELF_INTERSECTION_THRESHOLD       1000    /* 4000 */
+#define SELF_INTERSECTION_THRESHOLD       100    /* 4000 */
 #define MAX_SELF_INTERSECTION_THRESHOLD  50000
 
 // Used only with -s and -S options
@@ -314,11 +315,17 @@ free(old);                         /* don't need triangular tessellation any mor
 
 /*printf("VERTICES %d\n",pc);*/
 
-/* measure initial spacing for use later in self-intersection calculations */
-ml0 = sqrt( (v[0].xorig-v[v[0].n[0]].xorig)*(v[0].xorig-v[v[0].n[0]].xorig) +
-            (v[0].yorig-v[v[0].n[0]].yorig)*(v[0].yorig-v[v[0].n[0]].yorig) +
-            (v[0].zorig-v[v[0].n[0]].zorig)*(v[0].zorig-v[v[0].n[0]].zorig) );
-/*printf("ml0=%f\n",ml0);*/
+/* average edge length on initial tessellation (unit sphere), for 
+   use later in self-intersection calculations (unit sphere, assume
+   equilateral triangles). */
+
+int ntri = 0;
+for(i=0;i<pc;i++){
+  int k, l;
+  for(k=0; v[i].n[k]>-1; k++);
+  ntri += k;
+}
+ml0 = sqrt( 16.0*3.14159265358979323846*sqrt(3.0)/ntri );
 
 #ifdef DEBUG_NORMALS
 v = (points_struc *)realloc((void *)v,sizeof(points_struc)*2*(pc+10)); /* make space for storing normals */
@@ -501,6 +508,46 @@ while( pass > 0 || final_pass ) {
 
       sx=sy=sz=mml=0;
 
+#ifdef ADAPTIVE
+      double total_weight = 0.0;
+      for(l=0; l<k; l++) {
+        double dist = sqrt( (v[i].x-v[v[i].n[l]].x)*(v[i].x-v[v[i].n[l]].x) +
+                            (v[i].y-v[v[i].n[l]].y)*(v[i].y-v[v[i].n[l]].y) +
+                            (v[i].z-v[v[i].n[l]].z)*(v[i].z-v[v[i].n[l]].z) );
+        mml += dist;
+
+        /* Some adaptative strategy to cluster points where the 
+           surface is convex. */
+
+        double proji = ( v[v[i].n[l]].x - v[i].x ) * v[i].nx +
+                       ( v[v[i].n[l]].y - v[i].y ) * v[i].ny +
+                       ( v[v[i].n[l]].z - v[i].z ) * v[i].nz;
+        double projl = ( v[v[i].n[l]].x - v[i].x ) * v[v[i].n[l]].nx +
+                       ( v[v[i].n[l]].y - v[i].y ) * v[v[i].n[l]].ny +
+                       ( v[v[i].n[l]].z - v[i].z ) * v[v[i].n[l]].nz;
+
+        double dt_x = proji * v[i].nx - projl * v[v[i].n[l]].nx;
+        double dt_y = proji * v[i].ny - projl * v[v[i].n[l]].ny;
+        double dt_z = proji * v[i].nz - projl * v[v[i].n[l]].nz;;
+
+        if( dt_x*nx + dt_y*ny + dt_z*nz > 0 ) {
+          lavg = 0.0;       // do nothing for concave edges
+        } else {
+          /* this is a scaled h/L to account for curved convex surface */
+          lavg = 2.0 * sqrt( dt_x * dt_x + dt_y * dt_y + dt_z * dt_z ) / dist;
+          lavg = MIN( lavg, 4.0 );   // means max(h/l)=1/4
+        }
+
+        sx += ( v[v[i].n[l]].x - v[i].x ) * ( 1.0 + lavg );
+        sy += ( v[v[i].n[l]].y - v[i].y ) * ( 1.0 + lavg );
+        sz += ( v[v[i].n[l]].z - v[i].z ) * ( 1.0 + lavg );
+        total_weight += 1.0 + lavg;
+      }
+      sx /= total_weight;
+      sy /= total_weight;
+      sz /= total_weight;
+      mml /= k;
+#else
       for(l=0; l<k; l++) {
         sx += v[v[i].n[l]].x;
         sy += v[v[i].n[l]].y;
@@ -514,6 +561,7 @@ while( pass > 0 || final_pass ) {
       sy = sy/k - v[i].y;
       sz = sz/k - v[i].z;
       mml /= k;
+#endif
 
       /* part of s normal to surface, sn = n * (s.n)
          part of s tangent to surface, st = s - sn */
@@ -638,6 +686,28 @@ while( pass > 0 || final_pass ) {
 
       /* estimate the update */
 
+#ifdef ADAPTIVE
+      if( sn > 0 ) {
+        /* concave, use a larger radius near start, smaller near end */
+        if( iters > 0.75 * ITERATIONS ) {
+          rE = 0.5 * (1/RADIUSMIN + 1/RADIUSMAX);
+          rF = 6.0 / (1/RADIUSMIN - 1/RADIUSMAX);
+        } else {
+          rE = 0.5 * (1/(2.0*RADIUSMIN) + 1/RADIUSMAX);
+          rF = 6.0 / (1/(2.0*RADIUSMIN) - 1/RADIUSMAX);
+        }
+      } else {
+        /* convex, allow a smaller min radius near end, larger near start */
+        if( iters > 0.75 * ITERATIONS ) {
+          rE = 0.5 * (1/(0.5*RADIUSMIN) + 1/RADIUSMAX);
+          rF = 6.0 / (1/(0.5*RADIUSMIN) - 1/RADIUSMAX);
+        } else {
+          rE = 0.5 * (1/RADIUSMIN + 1/RADIUSMAX);
+          rF = 6.0 / (1/RADIUSMIN - 1/RADIUSMAX);
+        }
+      }
+#endif
+
       /* normal component of smoothing */
       tmpf = 2 * ABS(sn) / (mml*mml + sn*sn);    /* 1/r ; r=local radius of curvature */
       tmpf = 0.5 * ( 1 + tanh((tmpf-rE)*rF) );   /* f(1/r) ; this makes big r have low */
@@ -670,10 +740,12 @@ while( pass > 0 || final_pass ) {
 
     if( ( (iters+1)%ITERATIONS_CHECK == 0 ) || ( iters == ITERATIONS-1 ) ) {
       int j, l;
-
+      int bad_points = 0;
       intersection=0;
       for(i=0; i<pc; i++) { /* loop round all points */
-        for(j=0; j<pc; j++) { /* inner loop round all points */
+
+        tmpf = 0.0;
+        for(j=i+1; j<pc; j++) { /* inner loop round all points */
           int do_it=1;
 	  
           if (j==i) /* other point is same as current one - don't use */
@@ -683,23 +755,28 @@ while( pass > 0 || final_pass ) {
             if (j==v[i].n[l])
               do_it=0;
 
-          if ( (do_it) &&
-             ( (v[i].x-v[j].x)*(v[i].x-v[j].x) + (v[i].y-v[j].y)*(v[i].y-v[j].y) + (v[i].z-v[j].z)*(v[i].z-v[j].z) < ml*ml ) ) {
-            double dist = sqrt ( (v[i].x-v[j].x)*(v[i].x-v[j].x) +
-                                 (v[i].y-v[j].y)*(v[i].y-v[j].y) +
-                                 (v[i].z-v[j].z)*(v[i].z-v[j].z) ),
-            distorig = sqrt ( (v[i].xorig-v[j].xorig)*(v[i].xorig-v[j].xorig) +
-                              (v[i].yorig-v[j].yorig)*(v[i].yorig-v[j].yorig) +
-                              (v[i].zorig-v[j].zorig)*(v[i].zorig-v[j].zorig) );
+          /* vertices with same outward normal cannot intersect */
+          if( v[i].nx*v[j].nx + v[i].ny*v[j].ny + v[i].nz*v[j].nz > 0.25 ) do_it = 0;  /* 75 degrees */
 
-            tmpf = (distorig/ml0) - (dist/ml);    /* orig distance (in units of mean length) - current distance */
-            tmpf *= tmpf;                         /* weight higher values more highly */
-            intersection += tmpf;
+          if( do_it ) {
+            double dist = (v[i].x-v[j].x)*(v[i].x-v[j].x) +
+                          (v[i].y-v[j].y)*(v[i].y-v[j].y) +
+                          (v[i].z-v[j].z)*(v[i].z-v[j].z);
+            if( dist < ml*ml ) {
+              tmpf += ((v[i].xorig-v[j].xorig)*(v[i].xorig-v[j].xorig) +
+                      (v[i].yorig-v[j].yorig)*(v[i].yorig-v[j].yorig) +
+                      (v[i].zorig-v[j].zorig)*(v[i].zorig-v[j].zorig)) / dist;
+            }
           }
         }
+        if( tmpf > 0.0 ) {
+          bad_points++;
+          intersection += tmpf;
+        }
       }
-      printf("self-intersection total after %d iterations = %f (threshold=%f)\n",
-             iters+1, intersection,(double)SELF_INTERSECTION_THRESHOLD);
+      intersection *= (ml*ml/(ml0*ml0));
+      printf("self-intersection total (%d) after %d iterations = %f (threshold=%f)\n",
+             bad_points, iters+1, intersection,(double)SELF_INTERSECTION_THRESHOLD);
       if( intersection > MAX_SELF_INTERSECTION_THRESHOLD ) break;
     }
   }
