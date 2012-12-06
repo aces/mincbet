@@ -1,3 +1,6 @@
+2012-12-03  Claude Lepage      <claude@bic.mni.mcgill.ca>
+	* WM threshold for stopping criterion in skull/meninges/dura
+
 2009-07-31  Claude Lepage      <claude@bic.mni.mcgill.ca>
 	* correction on size of initial sphere for large ventricles
 	* revised criterion for self-intersection

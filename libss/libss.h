@@ -44,7 +44,7 @@ typedef struct {
     xo, yo, zo,                              /* origin */
     tr,                                      /* seconds between volumes */
     min, max, thresh2, thresh98, thresh,     /* various brightness thresholds */
-    medianval,
+    threshWM, medianval,
     lthresh, uthresh,                        /* lower and upper thresholds - some procs will ignore data outside these */
     dtmin, dtmax;                            /* min and max values for data type */
   char orient,                               /* orientation */

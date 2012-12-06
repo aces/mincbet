@@ -124,7 +124,7 @@ int main(argc, argv)
 {
   /* vars */
 
-FDT *in, *mask=NULL, *raw=NULL, threshold, thresh2, thresh98,
+FDT *in, *mask=NULL, *raw=NULL, threshold, thresh2, threshWM, thresh98,
   hist_min=0, hist_max=0, medianval;
 int x_size, y_size, z_size, x, y, z, i, pc=0, iters, pass=1, final_pass=0,
   output_brain=1, output_bic=0, output_xtopol=0, output_cost=0, output_mask=0,
@@ -267,11 +267,12 @@ hist_min=im.min;
 hist_max=im.max; 
 thresh2=im.thresh2; 
 thresh98=im.thresh98; 
+threshWM=im.threshWM; 
 threshold=im.thresh;
 medianval = im.medianval;
 
-printf("hist_min=%f thresh2=%f thresh=%f thresh98=%f hist_max=%f\n",
-       im.min,(double)thresh2,(double)threshold,(double)thresh98,im.max);
+printf("hist_min=%f thresh2=%f thresh=%f threshWM=%f thresh98=%f hist_max=%f\n",
+       im.min,(double)thresh2,(double)threshold,(double)threshWM,(double)thresh98,im.max);
 printf("THRESHOLD %f\n",(double)threshold);
 printf("MEDIANVAL %f\n",(double)medianval);
 
@@ -297,7 +298,8 @@ if( fix_upper ) {
      For t1 image, used to clip hyperintense white voxels in bone marrow.
      Should be about equal to white_mean + 3 * white_stddev as obtained
      from the preliminary classified image. For t2/pd image, do nothing. */
-  threshold_upper = thresh98;
+  // threshold_upper = thresh98;
+  threshold_upper = 0.50 * medianval + ( 1.0 - 0.50 ) * threshWM;
   printf("UPPER THRESHOLD %f\n", threshold_upper );
 }
 
@@ -782,7 +784,7 @@ while( pass > 0 || final_pass ) {
   }
 
   if (pass<PASSES) {
-    if (intersection>SELF_INTERSECTION_THRESHOLD) {
+    if (intersection>SELF_INTERSECTION_THRESHOLD || pass <= 2 ) {
       printf("thus will rerun with higher smoothness constraint\n");
       pass++;
     } else {

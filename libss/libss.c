@@ -358,7 +358,7 @@ void find_thresholds (image_struct *im) {
 
   int  HISTOGRAM_BINS = MAX_HISTOGRAM_BINS;
 
-  int iter, i, imin, imax, imax_bg, itail_bg, ithresh, imed;
+  int iter, i, imin, imax, imax_bg, itail_bg, ithresh, imed, iwm;
   int hist[MAX_HISTOGRAM_BINS];
   float sum, cumul;
   float fhist[MAX_HISTOGRAM_BINS];
@@ -608,6 +608,14 @@ void find_thresholds (image_struct *im) {
   imed = imax_grad;   /* this seems to be the best compromise */
   dx = (float)( im->max - im->min ) / ( (float)(HISTOGRAM_BINS) );
 
+  iwm = imax;
+  for( i = imax; i > imed; i-- ) {
+    if( fhist[i+1]>fhist[i] ) {
+      iwm = i+1;
+      break;
+    }
+  }
+
 #if DBG
   cumul = 0.0;
   printf( "# i t1 f df1 df2 cf\n" );
@@ -632,8 +640,8 @@ void find_thresholds (image_struct *im) {
   im->thresh = im->min + ( ithresh + 1 ) * dx;
   im->medianval = im->min + ( imed + 1 ) * dx;
   im->thresh98 = im->min + ( imax + 1 ) * dx;
+  im->threshWM = im->min + ( iwm + 1 ) * dx;
   im->max = MAX( im->max, im->thresh98 );
-
 
 #if DBG
   printf( "# t2=%g th=%g med=%g t98=%g\n", im->thresh2, im->thresh,
