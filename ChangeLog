@@ -1,3 +1,7 @@
+2015-11-03  Claude Lepage      <claude@bic.mni.mcgill.ca>
+	* remove unused reference to lib bicpl for compilation
+	  with gcc 4.6.X
+
 2012-12-03  Claude Lepage      <claude@bic.mni.mcgill.ca>
 	* WM threshold for stopping criterion in skull/meninges/dura
 

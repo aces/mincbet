@@ -4,7 +4,7 @@ dnl Process this file with autoconf to produce a configure script.
 AC_PREREQ([2.57])
 
 # The arguments are package name, and package version.
-AC_INIT([mincbet],[1.3.6], [Andrew Janke <a.janke@gmail.com>])
+AC_INIT([mincbet],[1.3.7], [Andrew Janke <a.janke@gmail.com>])
 AC_CONFIG_SRCDIR([bet.c])
 
 AM_INIT_AUTOMAKE
@@ -24,7 +24,7 @@ AC_PROG_INSTALL
 AC_PROG_LN_S
 AC_PROG_MAKE_SET
 
-mni_REQUIRE_BICPL
+mni_REQUIRE_VOLUMEIO
 
 dnl Build only static libs by default
 AC_DISABLE_SHARED
